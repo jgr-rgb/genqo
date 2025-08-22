@@ -14,7 +14,9 @@ import pandas as pd
 import hickle as hkl
 import copy
 from joblib import Parallel, delayed
-    
+from sympy.polys import Poly, PolynomialRing
+from sympy import symbols, I, expand, QQ
+
 
 TYP_PARAMS = {
     "mean_photon": 0.01,
@@ -44,6 +46,23 @@ class tools:
 
     @staticmethod
     def expand_powers_to_symbols(array):
+        """
+        This function expands any basis state symbols which are raised to a power
+        """
+        expanded_array = []
+        for item in array:
+            if isinstance(item, sp.core.power.Pow):
+                base, exp = item.as_base_exp()
+                if exp.is_Integer:
+                    expanded_array.extend([base] * int(exp))
+                else:
+                    expanded_array.append(item)
+            else:
+                expanded_array.append(item)
+        return expanded_array
+
+    @staticmethod
+    def expand_powers_to_symbols_list(array):
         """
         This functin is used by the CvecZALM function to expand any basis state symbols which are raised to a power
         """
@@ -103,8 +122,6 @@ class tools:
         - An array of all of the moments that are to be calculated. Generally, each class below has unique moment vectors for the quantities calculated. This funciton is unused and here for reference. 
         """
         mds = len(l) # Number of modes for our system
-
-        # TODO: Use polytype sympy to speed up the symbolics
 
         # For the number of modes desired, create a vector of (q/p)_{\alphas / \beta}'s
         qai = [sp.symbols("qa{}".format(i)) for i in range(1, mds + 1)]
@@ -182,6 +199,32 @@ class tools:
 
     @staticmethod
     def wick_coupling_mat(input1, bv):
+        """
+        Arguments
+            input1: The phase space input upon which we want to perform Wick coupling
+            bv: The cooresponding basis vector, which will be used so that the output are matrix locations
+        Outputs
+            An array of matrix coordinates which will be added and multiplied to perform Wick's theorem
+        """
+
+        # Differentiate between the coefficients and the phase space variables, then save the coefficient so that it can be used later
+        coef = input1[0]
+        input1a = input1[1:]
+
+        # Create a dictionary mapping each basis vector element to its index (only once)
+        bv_index_map = {element: idx for idx, element in enumerate(bv)}
+        
+        # Relate the phase coordinates to the basis vector using the map
+        input = []
+        for l in input1a:
+            input.append(bv_index_map[l])  # O(1) lookup instead of O(n) .index()
+
+        test = tools.wick_pairings(input)
+
+        return [test,coef]  # The final array that contains all combinations which are valid for Wick coupling in terms of their location in the matrix, as well as the coeficient by which the result needs to be multiplied
+
+    @staticmethod
+    def wick_coupling_mat_list(input1, bv):
         """
         Arguments
             input1: The phase space input upon which we want to perform Wick coupling
@@ -1080,6 +1123,8 @@ class SPDC:
 
         C = Ca*Cb
 
+        # TODO: Change so that this matches the ZALM moment_vector_with_memory that uses tuples instead of lists
+
         # Seperating the coefficients in a way that can be used by the Wick coupling function
         C = sp.expand(C)
         Cv = C.as_ordered_terms()
@@ -1095,7 +1140,7 @@ class SPDC:
         Coutf = []
         for i in Cout:
             # print(i)
-            Coutf.append(tools.expand_powers_to_symbols(i))
+            Coutf.append(tools.expand_powers_to_symbols_list(i))
 
         return Coutf
 
@@ -1221,7 +1266,7 @@ class SPDC:
         
         elm = 0
         for i in Cni:
-            a = tools.wick_coupling_mat(i,xb)
+            a = tools.wick_coupling_mat_list(i,xb)
             elm += tools.wick_out(a, Anv)
         return elm
     
@@ -2040,8 +2085,303 @@ class ZALM:
 
         return ZALM.dmatval(Cn, nAinv, x)
 
+    def moment_vector_with_memory_poly(lambda_vector, dmi, dmj, nvec, eta_t, eta_d, eta_b):
+        """
+        Polynomial-based version using sympy.polys for speed.
+
+        Returns
+        -------
+        tuple of tuples: (coef, var1, var2, ...) per monomial term.
+        """
+        # --- Setup ---
+        # Use SymPy numbers/symbols only (no numpy or math here)
+        eta_t, eta_d, eta_b = map(sp.sympify, (eta_t, eta_d, eta_b))
+
+        mds = 8 * len(lambda_vector)  # Number of modes
+
+        # Generators (variables) for the polynomial ring
+        qai = sp.symbols(f"qa1:qa{mds+1}".replace("qa", "qa"))
+        pai = sp.symbols(f"pa1:pa{mds+1}".replace("pa", "pa"))
+        qbi = sp.symbols(f"qb1:qb{mds+1}".replace("qb", "qb"))
+        pbi = sp.symbols(f"pb1:pb{mds+1}".replace("pb", "pb"))
+
+        # Flatten gens in a deterministic order
+        gens = tuple(qai) + tuple(pai) + tuple(qbi) + tuple(pbi)
+
+        # Convenience: build linear forms α_j ≔ (q_j + i p_j) and β_j ≔ (q'_j − i p'_j)
+        # (we handled the 1/√2 factors below via coefficients)
+        alpha = [
+            sp.Poly(qai[j] + sp.I * pai[j], gens=gens, domain=sp.EX)
+            for j in range(mds)
+        ]
+        beta = [
+            sp.Poly(qbi[j] - sp.I * pbi[j], gens=gens, domain=sp.EX)
+            for j in range(mds)
+        ]
+
+        # Efficiencies per index
+        etav = [
+            eta_t*eta_d, eta_t*eta_d, eta_b, eta_b, eta_b, eta_b, eta_t*eta_d, eta_t*eta_d
+        ]
+        # Scale to absorb all √2 factors: (√η/2)*(q ± i p)
+        s = [sp.sqrt(e)/2 for e in etav]
+
+        # Helper: linear combo c0*α_i ± c1*α_j
+        def lin_alp(i, j, s_i, s_j, sign=+1):
+            # Poly scaled by ground coefficient -> stays Poly in domain EX
+            L = alpha[i].mul_ground(s_i)
+            R = alpha[j].mul_ground(s_j if sign > 0 else -s_j)
+            return L + R
+
+        def lin_bet(i, j, s_i, s_j, sign=+1):
+            L = beta[i].mul_ground(s_i)
+            R = beta[j].mul_ground(s_j if sign > 0 else -s_j)
+            return L + R
+
+        # --- Build Ca depending on dmi ---
+        if dmi == 0:
+            Ca1 = lin_alp(0, 1, s[0], s[1], sign=-1) ** int(nvec[0])
+            Ca2 = lin_alp(0, 1, s[0], s[1], sign=+1) ** int(nvec[1])
+            Ca3 = lin_alp(6, 7, s[6], s[7], sign=-1) ** int(nvec[6])
+            Ca4 = lin_alp(6, 7, s[6], s[7], sign=+1) ** int(nvec[7])
+            Ca = Ca1 * Ca2 * Ca3 * Ca4
+        elif dmi == 1:
+            Ca1 = lin_alp(0, 1, s[0], s[1], sign=-1) ** int(nvec[0])
+            Ca2 = lin_alp(0, 1, s[0], s[1], sign=+1) ** int(nvec[1])
+            Ca3 = lin_alp(6, 7, s[6], s[7], sign=+1) ** int(nvec[6])
+            Ca4 = lin_alp(6, 7, s[6], s[7], sign=-1) ** int(nvec[7])
+            Ca = Ca1 * Ca2 * Ca3 * Ca4
+        elif dmi == 2:
+            Ca1 = lin_alp(0, 1, s[0], s[1], sign=+1) ** int(nvec[0])
+            Ca2 = lin_alp(0, 1, s[0], s[1], sign=-1) ** int(nvec[1])
+            Ca3 = lin_alp(6, 7, s[6], s[7], sign=-1) ** int(nvec[6])
+            Ca4 = lin_alp(6, 7, s[6], s[7], sign=+1) ** int(nvec[7])
+            Ca = Ca1 * Ca2 * Ca3 * Ca4
+        elif dmi == 3:
+            Ca1 = lin_alp(0, 1, s[0], s[1], sign=+1) ** int(nvec[0])
+            Ca2 = lin_alp(0, 1, s[0], s[1], sign=-1) ** int(nvec[1])
+            Ca3 = lin_alp(6, 7, s[6], s[7], sign=+1) ** int(nvec[6])
+            Ca4 = lin_alp(6, 7, s[6], s[7], sign=-1) ** int(nvec[7])
+            Ca = Ca1 * Ca2 * Ca3 * Ca4
+        else:
+            Ca = sp.Poly(1, gens=gens, domain=sp.EX)
+
+        # --- Build Cb depending on dmj ---
+        if dmj == 0:
+            Cb1 = lin_bet(0, 1, s[0], s[1], sign=-1) ** int(nvec[0])
+            Cb2 = lin_bet(0, 1, s[0], s[1], sign=+1) ** int(nvec[1])
+            Cb3 = lin_bet(6, 7, s[6], s[7], sign=-1) ** int(nvec[6])
+            Cb4 = lin_bet(6, 7, s[6], s[7], sign=+1) ** int(nvec[7])
+            Cb = Cb1 * Cb2 * Cb3 * Cb4
+        elif dmj == 1:
+            Cb1 = lin_bet(0, 1, s[0], s[1], sign=-1) ** int(nvec[0])
+            Cb2 = lin_bet(0, 1, s[0], s[1], sign=+1) ** int(nvec[1])
+            Cb3 = lin_bet(6, 7, s[6], s[7], sign=+1) ** int(nvec[6])
+            Cb4 = lin_bet(6, 7, s[6], s[7], sign=-1) ** int(nvec[7])
+            Cb = Cb1 * Cb2 * Cb3 * Cb4
+        elif dmj == 2:
+            Cb1 = lin_bet(0, 1, s[0], s[1], sign=+1) ** int(nvec[0])
+            Cb2 = lin_bet(0, 1, s[0], s[1], sign=-1) ** int(nvec[1])
+            Cb3 = lin_bet(6, 7, s[6], s[7], sign=-1) ** int(nvec[6])
+            Cb4 = lin_bet(6, 7, s[6], s[7], sign=+1) ** int(nvec[7])
+            Cb = Cb1 * Cb2 * Cb3 * Cb4
+        elif dmj == 3:
+            Cb1 = lin_bet(0, 1, s[0], s[1], sign=+1) ** int(nvec[0])
+            Cb2 = lin_bet(0, 1, s[0], s[1], sign=-1) ** int(nvec[1])
+            Cb3 = lin_bet(6, 7, s[6], s[7], sign=+1) ** int(nvec[6])
+            Cb4 = lin_bet(6, 7, s[6], s[7], sign=-1) ** int(nvec[7])
+            Cb = Cb1 * Cb2 * Cb3 * Cb4
+        else:
+            Cb = sp.Poly(1, gens=gens, domain=sp.EX)
+
+        # --- Cd terms: (alpha[j]*beta[j]*eta[j])^n / n! with alpha= (q+ip)/√2, beta=(qb - i pb)/√2
+        # alpha*beta = ((q+ip)*(qb - i pb))/2, so base_j = (eta_j/2) * (alpha_j * beta_j) where alpha_j, beta_j here are the
+        #   *unscaled* linear forms we defined above (no 1/√2 factor).
+        def cd_term(j, n):
+            if int(n) == 0:
+                return sp.Poly(1, gens=gens, domain=sp.EX)
+            base = (alpha[j] * beta[j]).mul_ground(etav[j] / 2)  # multiply polynomial by ground coefficient
+            term = base ** int(n)
+            return term.mul_ground(sp.Rational(1, sp.factorial(int(n))))
+
+        Cd3 = cd_term(2, nvec[2])
+        Cd4 = cd_term(3, nvec[3])
+        Cd5 = cd_term(4, nvec[4])
+        Cd6 = cd_term(5, nvec[5])
+
+        # Final polynomial
+        C = Cd3 * Cd4 * Cd5 * Cd6 * Ca * Cb
+
+        # --- Convert to requested tuple format, using sparse terms directly ---
+        result = []
+        for monom, coeff in C.terms():  # monom is a tuple of exponents aligned to `gens`
+            # Build the symbol list by repeating each generator according to its exponent
+            symbols = []
+            for g, e in zip(gens, monom):
+                if e:
+                    symbols.extend([g] * e)
+            result.append((sp.simplify(coeff),) + tuple(symbols))
+
+        return tuple(result)
+
+
     @staticmethod
     def moment_vector_with_memory(lambda_vector, dmi, dmj, nvec, eta_t, eta_d, eta_b):
+        """
+        Arguments
+        - lambda_vector: The vector of lambda_i's
+        - dmi: The row corresponding to the density matrix element of interest
+        - dmj: The column corresponding to the density matrix element of interest
+        - nvec: The vector of n_i's for the system, where n_i is the number of photons in mode i
+        - eta_t: The transmission efficiency
+        - eta_d: The detection efficiency
+        - eta_b: The Bell state measurement efficiency
+        Output
+        - A tuple of all moments to be calculated when using a Duan-Kimble style quantum memory
+        """
+        mds = 8 * len(lambda_vector)  # Number of modes for our system
+
+        # For the number of modes desired, create a vector of (q/p)_{\alphas / \beta}'s
+        qai = [sp.symbols("qa{}".format(i)) for i in range(1, mds + 1)]
+        pai = [sp.symbols("pa{}".format(i)) for i in range(1, mds + 1)]
+        qbi = [sp.symbols("qb{}".format(i)) for i in range(1, mds + 1)]
+        pbi = [sp.symbols("pb{}".format(i)) for i in range(1, mds + 1)]
+
+        # Define the alpha and beta vectors
+        alp = []
+        bet = []
+        j = 0
+        while j < mds:
+            alp.append((1 / np.sqrt(2)) * (qai[j] + sp.I * pai[j]))
+            bet.append(
+                (1 / np.sqrt(2)) * (qbi[j] - sp.I * pbi[j])
+            )  # We have already taken the complex conjugate
+            j += 1
+        
+        etav = np.array([eta_t*eta_d, eta_t*eta_d, eta_b, eta_b, eta_b, eta_b, eta_t*eta_d, eta_t*eta_d])
+
+        # Calculate Ca based on dmi value
+        if dmi == 0:
+            Ca1 = ((alp[0]*np.sqrt(etav[0]) - alp[1]*np.sqrt(etav[1]))/(np.sqrt(2)))**(nvec[0]) 
+            Ca2 = ((alp[0]*np.sqrt(etav[0]) + alp[1]*np.sqrt(etav[1]))/(np.sqrt(2)))**(nvec[1])  
+            Ca3 = ((alp[6]*np.sqrt(etav[6]) - alp[7]*np.sqrt(etav[7]))/(np.sqrt(2)))**(nvec[6]) 
+            Ca4 = ((alp[6]*np.sqrt(etav[6]) + alp[7]*np.sqrt(etav[7]))/(np.sqrt(2)))**(nvec[7]) 
+            Ca = Ca1*Ca2*Ca3*Ca4 
+        elif dmi == 1:
+            Ca1 = ((alp[0]*np.sqrt(etav[0]) - alp[1]*np.sqrt(etav[1]))/(np.sqrt(2)))**(nvec[0]) 
+            Ca2 = ((alp[0]*np.sqrt(etav[0]) + alp[1]*np.sqrt(etav[1]))/(np.sqrt(2)))**(nvec[1])  
+            Ca3 = ((alp[6]*np.sqrt(etav[6]) + alp[7]*np.sqrt(etav[7]))/(np.sqrt(2)))**(nvec[6]) 
+            Ca4 = ((alp[6]*np.sqrt(etav[6]) - alp[7]*np.sqrt(etav[7]))/(np.sqrt(2)))**(nvec[7]) 
+            Ca = Ca1*Ca2*Ca3*Ca4 
+        elif dmi == 2:
+            Ca1 = ((alp[0]*np.sqrt(etav[0]) + alp[1]*np.sqrt(etav[1]))/(np.sqrt(2)))**(nvec[0]) 
+            Ca2 = ((alp[0]*np.sqrt(etav[0]) - alp[1]*np.sqrt(etav[1]))/(np.sqrt(2)))**(nvec[1])  
+            Ca3 = ((alp[6]*np.sqrt(etav[6]) - alp[7]*np.sqrt(etav[7]))/(np.sqrt(2)))**(nvec[6]) 
+            Ca4 = ((alp[6]*np.sqrt(etav[6]) + alp[7]*np.sqrt(etav[7]))/(np.sqrt(2)))**(nvec[7]) 
+            Ca = Ca1*Ca2*Ca3*Ca4 
+        elif dmi == 3:
+            Ca1 = ((alp[0]*np.sqrt(etav[0]) + alp[1]*np.sqrt(etav[1]))/(np.sqrt(2)))**(nvec[0]) 
+            Ca2 = ((alp[0]*np.sqrt(etav[0]) - alp[1]*np.sqrt(etav[1]))/(np.sqrt(2)))**(nvec[1])  
+            Ca3 = ((alp[6]*np.sqrt(etav[6]) + alp[7]*np.sqrt(etav[7]))/(np.sqrt(2)))**(nvec[6]) 
+            Ca4 = ((alp[6]*np.sqrt(etav[6]) - alp[7]*np.sqrt(etav[7]))/(np.sqrt(2)))**(nvec[7]) 
+            Ca = Ca1*Ca2*Ca3*Ca4 
+        else:
+            Ca = 1
+
+        # Calculate Cb based on dmj value
+        if dmj == 0:
+            Cb1 = ((bet[0]*np.sqrt(etav[0]) - bet[1]*np.sqrt(etav[1]))/(np.sqrt(2)))**(nvec[0]) 
+            Cb2 = ((bet[0]*np.sqrt(etav[0]) + bet[1]*np.sqrt(etav[1]))/(np.sqrt(2)))**(nvec[1])  
+            Cb3 = ((bet[6]*np.sqrt(etav[6]) - bet[7]*np.sqrt(etav[7]))/(np.sqrt(2)))**(nvec[6]) 
+            Cb4 = ((bet[6]*np.sqrt(etav[6]) + bet[7]*np.sqrt(etav[7]))/(np.sqrt(2)))**(nvec[7]) 
+            Cb = Cb1*Cb2*Cb3*Cb4 
+        elif dmj == 1:
+            Cb1 = ((bet[0]*np.sqrt(etav[0]) - bet[1]*np.sqrt(etav[1]))/(np.sqrt(2)))**(nvec[0]) 
+            Cb2 = ((bet[0]*np.sqrt(etav[0]) + bet[1]*np.sqrt(etav[1]))/(np.sqrt(2)))**(nvec[1])  
+            Cb3 = ((bet[6]*np.sqrt(etav[6]) + bet[7]*np.sqrt(etav[7]))/(np.sqrt(2)))**(nvec[6]) 
+            Cb4 = ((bet[6]*np.sqrt(etav[6]) - bet[7]*np.sqrt(etav[7]))/(np.sqrt(2)))**(nvec[7]) 
+            Cb = Cb1*Cb2*Cb3*Cb4 
+        elif dmj == 2:
+            Cb1 = ((bet[0]*np.sqrt(etav[0]) + bet[1]*np.sqrt(etav[1]))/(np.sqrt(2)))**(nvec[0]) 
+            Cb2 = ((bet[0]*np.sqrt(etav[0]) - bet[1]*np.sqrt(etav[1]))/(np.sqrt(2)))**(nvec[1])  
+            Cb3 = ((bet[6]*np.sqrt(etav[6]) - bet[7]*np.sqrt(etav[7]))/(np.sqrt(2)))**(nvec[6]) 
+            Cb4 = ((bet[6]*np.sqrt(etav[6]) + bet[7]*np.sqrt(etav[7]))/(np.sqrt(2)))**(nvec[7]) 
+            Cb = Cb1*Cb2*Cb3*Cb4 
+        elif dmj == 3:
+            Cb1 = ((bet[0]*np.sqrt(etav[0]) + bet[1]*np.sqrt(etav[1]))/(np.sqrt(2)))**(nvec[0]) 
+            Cb2 = ((bet[0]*np.sqrt(etav[0]) - bet[1]*np.sqrt(etav[1]))/(np.sqrt(2)))**(nvec[1])  
+            Cb3 = ((bet[6]*np.sqrt(etav[6]) + bet[7]*np.sqrt(etav[7]))/(np.sqrt(2)))**(nvec[6]) 
+            Cb4 = ((bet[6]*np.sqrt(etav[6]) - bet[7]*np.sqrt(etav[7]))/(np.sqrt(2)))**(nvec[7]) 
+            Cb = Cb1*Cb2*Cb3*Cb4 
+        else:
+            Cb = 1
+
+        # Calculate Cd terms
+        Cd3 = (alp[2]*bet[2]*etav[2])**(nvec[2])/math.factorial(nvec[2])
+        Cd4 = (alp[3]*bet[3]*etav[3])**(nvec[3])/math.factorial(nvec[3])
+        Cd5 = (alp[4]*bet[4]*etav[4])**(nvec[4])/math.factorial(nvec[4])
+        Cd6 = (alp[5]*bet[5]*etav[5])**(nvec[5])/math.factorial(nvec[5])
+        C = Cd3*Cd4*Cd5*Cd6*Ca*Cb
+
+        # # Process terms and convert to tuples
+        # C = sp.expand(C)
+        # Cv = tuple(C.as_ordered_terms())
+
+        # # Create result with structured tuples
+        # result = []
+        # for term in Cv:
+        #     # Extract the numeric coefficient from the term
+        #     coef, symbolic_part = term.as_coeff_mul()
+            
+        #     # Process symbolic factors and combine all numeric elements
+        #     numeric_coef = coef
+        #     symbolic_factors = []
+            
+        #     for factor in symbolic_part:
+        #         if factor.is_number or factor == sp.I or factor == -sp.I:
+        #             numeric_coef *= factor
+        #         else:
+        #             symbolic_factors.append(factor)
+            
+        #     # Expand powers in symbolic factors
+        #     expanded_symbols = tools.expand_powers_to_symbols(symbolic_factors)
+            
+        #     # Create tuple with numeric coefficient first
+        #     result_tuple = (numeric_coef,) + tuple(expanded_symbols)
+        #     result.append(result_tuple)
+
+            # Convert polynomial expression to regular expression and expand
+        C_expanded = expand(C)
+        
+        # Process terms to create the structured tuples
+        result = []
+        for term in C_expanded.as_ordered_terms():
+            coef, rest = term.as_coeff_mul()
+            
+            # Collect all numeric factors into coefficient
+            symbolic_factors = []
+            for factor in rest:
+                if factor.is_number:
+                    coef *= factor
+                else:
+                    symbolic_factors.append(factor)
+            
+            # Expand powers
+            expanded_symbols = []
+            for factor in symbolic_factors:
+                if isinstance(factor, sp.Pow) and factor.exp.is_Integer:
+                    expanded_symbols.extend([factor.base] * int(factor.exp))
+                else:
+                    expanded_symbols.append(factor)
+            
+            # Create result tuple with numeric coefficient first
+            result_tuple = (coef,) + tuple(expanded_symbols)
+            result.append(result_tuple)
+
+        return tuple(result)
+
+    @staticmethod
+    def moment_vector_with_memory_list(lambda_vector, dmi, dmj, nvec, eta_t, eta_d, eta_b):
         """
         Arguments
         - lambda_vector: The vector of lambda_i's
@@ -2147,6 +2487,7 @@ class ZALM:
         # C = Ca*Cb
 
         # Seperating the coefficients in a way that can be used by the Wick coupling function
+        
         C = sp.expand(C)
         Cv = C.as_ordered_terms()
 
