@@ -104,6 +104,8 @@ class tools:
         """
         mds = len(l) # Number of modes for our system
 
+        # TODO: Use polytype sympy to speed up the symbolics
+
         # For the number of modes desired, create a vector of (q/p)_{\alphas / \beta}'s
         qai = [sp.symbols("qa{}".format(i)) for i in range(1, mds + 1)]
         pai = [sp.symbols("pa{}".format(i)) for i in range(1, mds + 1)]
@@ -2152,7 +2154,7 @@ class ZALM:
         Cout = []
         i = 0
         while i < len(Cv):
-            Cout.append(Cv[i].as_ordered_factors()) # Should be a list of tuples, starting with the number then the rest of the list
+            Cout.append(Cv[i].as_ordered_factors()) # TODO: Should be a list of tuples, starting with the number then the rest of the list
             i += 1
 
         # Doing a little bit extra to handle the powers
