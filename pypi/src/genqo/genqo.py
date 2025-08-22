@@ -159,6 +159,8 @@ class tools:
         indices = list(range(n))
         all_pairings = []
         
+        # TODO: Speed this up using Numba
+
         # Get all ways to partition the indices into pairs
         for partition in itertools.combinations(itertools.combinations(indices, 2), n//2):
             # Check if every index appears exactly once
@@ -194,10 +196,10 @@ class tools:
 
         # Differentiate between the coefficients and the phase space variables, then save the coefficient so that it can be used later
         input1a = input1[:]
-        coef = 1
+        coef = 1 # TODO: Make it so that in the tuple the coefficient is the first element
 
         i = 0
-        while i < len(input1a):
+        while i < len(input1a): # TODO: If structuring the input as a tuple, this loop will be free
             if type(input1a[i]) != sp.core.symbol.Symbol:
                 coef *= input1a[i]
                 input1a.pop(i)
@@ -207,7 +209,7 @@ class tools:
         # Relate the phase coordinates to the basis vector
         input = []
         for l in input1a:
-            input.append(bv.index(l))
+            input.append(bv.index(l)) # TODO: .index is itself a loop. Precompute this into a dictionary
 
         test = tools.wick_pairings(input)
 
@@ -2004,8 +2006,8 @@ class ZALM:
         nA = self.results["k_function_matrix"] + self.results["loss_bsm_matrix"]
         nAnv = np.linalg.inv(nA)
         
-        for i in tqdm(range(lmat)):
-            for j in tqdm(range(lmat)):
+        for i in range(lmat):
+            for j in range(lmat):
                 mat[i, j] = ZALM.dmijZ([1], i, j, nAnv, nvec, self.params["outcoupling_efficiency"], self.params["detection_efficiency"], self.params["bsm_efficiency"])
        
         self.results["output_state"] = mat # This is the unnormalized density matrix
@@ -2150,14 +2152,14 @@ class ZALM:
         Cout = []
         i = 0
         while i < len(Cv):
-            Cout.append(Cv[i].as_ordered_factors())
+            Cout.append(Cv[i].as_ordered_factors()) # Should be a list of tuples, starting with the number then the rest of the list
             i += 1
 
         # Doing a little bit extra to handle the powers
         Coutf = []
         for i in Cout:
             # print(i)
-            Coutf.append(tools.expand_powers_to_symbols(i))
+            Coutf.append(tools.expand_powers_to_symbols(i)) # Should be a tuple as well
 
         return Coutf
 
