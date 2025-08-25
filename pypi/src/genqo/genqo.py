@@ -16,6 +16,7 @@ import copy
 from joblib import Parallel, delayed
 from sympy.polys import Poly, PolynomialRing
 from sympy import symbols, I, expand, QQ
+from numba import njit
 
 
 TYP_PARAMS = {
@@ -27,6 +28,36 @@ TYP_PARAMS = {
     "dark_counts": 0,
     "visibility": 1,
 }
+
+
+def _wick_partitions(n):
+    all_partitions = []
+    indices = list(range(n))
+    for partition in itertools.combinations(itertools.combinations(indices, 2), n//2):
+        # Check if every index appears exactly once
+        flat_partition = [idx for pair in partition for idx in pair]
+        if len(set(flat_partition)) == n:
+            all_partitions.append(partition)
+    return np.array(all_partitions)
+
+cache_wick_partitions = {
+    2: _wick_partitions(2),
+    4: _wick_partitions(4),
+    6: _wick_partitions(6),
+    8: _wick_partitions(8),
+}
+
+@njit(fastmath=True)
+def wick_out_do_not_store_looping_pattern_numba_kernel(moment_vector, Anv, partitions):
+    coeff_sum = 0.0
+    for partition in partitions:
+        # Convert index pairings to element pairings
+        sum_factor = 1.0
+        for i, j in partition:
+            sum_factor *= Anv[moment_vector[i], moment_vector[j]]
+        coeff_sum += sum_factor
+    return coeff_sum
+
 
 class tools:
 
@@ -119,7 +150,7 @@ class tools:
         Arguments
         - l: A vector defining the exponents of the alpha and beta variables for a general moment calculation
         Output
-        - An array of all of the moments that are to be calculated. Generally, each class below has unique moment vectors for the quantities calculated. This funciton is unused and here for reference. 
+        - An array of all of the moments that are to be calculated. Generally, each class below has unique moment vectors for the quantities calculated. This funciton is unused and here for reference.
         """
         mds = len(l) # Number of modes for our system
 
@@ -170,14 +201,15 @@ class tools:
         """
         Generate all possible pairings (for Wick's theorem) of some moment vector element.
         """
+        # TODO: urgent - cache this
         n = len(moment_vector)
         if n % 2 != 0:
             raise ValueError("Moment vector must have even length for Wick's theorem")
-        
+
         # Generate all possible pairings of indices
         indices = list(range(n))
         all_pairings = []
-        
+
         # TODO: Speed this up using Numba
 
         # Get all ways to partition the indices into pairs
@@ -186,7 +218,7 @@ class tools:
             flat_partition = [idx for pair in partition for idx in pair]
             if len(set(flat_partition)) == n:
                 all_pairings.append(partition)
-        
+
         # Convert index pairings to element pairings
         element_pairings = []
         for pairing in all_pairings:
@@ -194,7 +226,7 @@ class tools:
             for i, j in pairing:
                 element_pairing.append((moment_vector[i], moment_vector[j]))
             element_pairings.append(element_pairing)
-        
+
         return element_pairings
 
     @staticmethod
@@ -208,12 +240,15 @@ class tools:
         """
 
         # Differentiate between the coefficients and the phase space variables, then save the coefficient so that it can be used later
+        # TODO: later input1 should be a tuple (input1[0], input1[1:])
         coef = input1[0]
         input1a = input1[1:]
 
         # Create a dictionary mapping each basis vector element to its index (only once)
+        # TODO: soon - precompute this reverse mapping when preparing the class - do this by calculating bv very early on, e.g. in __init__ and assigning it to a class property and never even bother passing it around as an argument to functions.
+        # TODO: later - earlier do the transformation from symbols to indices
         bv_index_map = {element: idx for idx, element in enumerate(bv)}
-        
+
         # Relate the phase coordinates to the basis vector using the map
         input = []
         for l in input1a:
@@ -221,7 +256,7 @@ class tools:
 
         test = tools.wick_pairings(input)
 
-        return [test,coef]  # The final array that contains all combinations which are valid for Wick coupling in terms of their location in the matrix, as well as the coeficient by which the result needs to be multiplied
+        return (test,coef)  # The final array that contains all combinations which are valid for Wick coupling in terms of their location in the matrix, as well as the coeficient by which the result needs to be multiplied
 
     @staticmethod
     def wick_coupling_mat_list(input1, bv):
@@ -264,11 +299,12 @@ class tools:
     def wick_out(ar, Anv):
         """
         Input:
-        - ar: The basis vector array
+        - ar: tuple (The basis vector array, the coefficient)
         - Anv: The inverse of the A matrix
         Output:
         - A calculation of the wick element for each coupling
         """
+        # TODO soon: use numba
 
         s = 0
         j = 0
@@ -281,11 +317,41 @@ class tools:
         return s*ar[1]
 
     @staticmethod
+    def wick_out_do_not_store_looping_pattern(Cni_instance, bv_index_map, Anv):
+        """
+        Input:
+        - ar: tuple (The basis vector array, the coefficient)
+        - Anv: The inverse of the A matrix
+        Output:
+        - A calculation of the wick element for each coupling
+        """
+        # TODO soon: use numba
+        #####
+        #test, coeff = tools.wick_coupling_mat(Cni_instance, xb)
+        #####
+        coef = Cni_instance[0]
+        input1a = Cni_instance[1:]
+
+        # Relate the phase coordinates to the basis vector using the map
+        moment_vector = np.empty(len(input1a), dtype=int)
+        for i, l in enumerate(input1a):
+            moment_vector[i] = bv_index_map[l]
+
+        #####
+        #element_pairings = tools.wick_pairings(moment_vector)
+        #####
+        # Get all ways to partition the indices into pairs
+        coeff_sum = wick_out_do_not_store_looping_pattern_numba_kernel(moment_vector, Anv, cache_wick_partitions[len(moment_vector)])
+
+        return coeff_sum*coef
+
+    @staticmethod
     def W(Cni, Amat, xb):
         """
         This is the function that we call the W function in the paper. It is what does the complete Wick coupling calculation
         """
         Anv = np.linalg.inv(Amat)
+        # TODO: later - precompute Anv before calling W given that W is called many times
 
         elm = 0
         for i in Cni: # Can change Cni to tqdm(Cni) to get a progress bar
@@ -294,7 +360,7 @@ class tools:
         return elm
 
     """
-    We can also simplify the calculation of Wick's theorem by using the Hafnian, instead of the approach used above. 
+    We can also simplify the calculation of Wick's theorem by using the Hafnian, instead of the approach used above.
     Hence, bellow are functions for performing calculations via the Hafnian
     """
 
@@ -316,7 +382,7 @@ class tools:
         """
         Define a function that multiplies n location vectors
         """
-        
+
         vm = []
         i = 0
         while i < len(v):
@@ -326,7 +392,7 @@ class tools:
             else:
                 vm = tools.multiply_location_vectors(vm,v[i])
                 i += 1
-        
+
         # Sorting the location vectors
         for i in vm:
             i[1] = np.sort(i[1])
@@ -439,7 +505,7 @@ class TMSV:
 
     def run(self):
         self.calculate_covariance_matrix()
-        
+
         # Calculate k function matrix
         self.calculate_k_function_matrix()
         self.calculate_loss_matrix()
@@ -468,7 +534,7 @@ class TMSV:
         Gamma = self.results["covariance_matrix"] + 0.5 * np.eye(
             self.results["covariance_matrix"].shape[0]
         )
-    
+
         self.results["Gamma"] = Gamma
         Gamma_inverse = np.linalg.inv(Gamma)
 
@@ -503,7 +569,7 @@ class TMSV:
                 G[i+2, i+4] = (1j)*(eta[i] - 1)
                 G[i+2, i+6] = (eta[i] - 1)
             return (1/2)*G + (1/2)*np.transpose(G) + (1/2)*np.eye(8)
-        
+
         self.results["loss_matrix"] = sub_loss(self.params["detection_efficiency"], self.params["detection_efficiency"])
 
     def calculate_probability_success(self):
@@ -521,7 +587,7 @@ class TMSV:
 
         nA = (self.results["k_function_matrix"] + self.results["loss_matrix"])
         Gam = self.results["Gamma"]
-        
+
         N1 = ((self.params["detection_efficiency"])**2)
         D1 = np.sqrt(np.linalg.det(nA))
         D2 = (np.linalg.det(Gam))**(0.25)
@@ -529,8 +595,8 @@ class TMSV:
         Coef = (N1)/(D1 * D2 * D3)
 
         C = TMSV.moment_vector(1)
-        
-        self.results["probability_success"] = Coef*tools.W(C,nA,x) 
+
+        self.results["probability_success"] = Coef*tools.W(C,nA,x)
         return self.results["probability_success"]
 
     @staticmethod
@@ -561,8 +627,8 @@ class TMSV:
             )  # We have already taken the complex conjugate
             j += 1
 
-        Ca = ((alp[0] * alp[1])**n)/(math.factorial(n)) 
-        Cb = ((bet[0] * bet[1])**n)/(math.factorial(n)) 
+        Ca = ((alp[0] * alp[1])**n)/(math.factorial(n))
+        Cb = ((bet[0] * bet[1])**n)/(math.factorial(n))
         C = (Ca * Cb)
 
         # Seperating the coefficients in a way that can be used by the Wick coupling function
@@ -676,7 +742,7 @@ class TMSV:
             )  # We have already taken the complex conjugate
             j += 1
 
-        Ca0 = ((alp[0])**na)/np.sqrt(math.factorial(na)) 
+        Ca0 = ((alp[0])**na)/np.sqrt(math.factorial(na))
         Ca1 = ((alp[1])**ma)/np.sqrt(math.factorial(ma))
         Cb0 = ((bet[0])**nb)/np.sqrt(math.factorial(nb))
         Cb1 = ((bet[1])**mb)/np.sqrt(math.factorial(mb))
@@ -762,7 +828,7 @@ class SPDC:
         Gamma = self.results["covariance_matrix"] + 0.5 * np.eye(
             self.results["covariance_matrix"].shape[0]
         )
-    
+
         self.results["Gamma"] = Gamma
         Gamma_inverse = np.linalg.inv(Gamma)
 
@@ -790,12 +856,12 @@ class SPDC:
         """
         Calculating the portion of the A matrix that arrises due to incorporating loss, specifically for fidelity calculations
         """
-        
+
         # Ordering is qqpp in every sub-block; compensated by appropriate basis vector later
         def sub_loss_fid(eta_t, eta_d):
             G = np.zeros((16, 16), dtype=np.complex128)
             eta = np.array([eta_t*eta_d, eta_t*eta_d, eta_t*eta_d, eta_t*eta_d])
-            
+
             for i in range(4):
                 G[i, i+8] = (eta[i] - 1)
                 G[i, i+12] = -1j*(eta[i] - 1)
@@ -810,18 +876,18 @@ class SPDC:
         """
         Calculating the portion of the A matrix that arrises due to incorporating loss, specifically for the trace of the BSM matrix
         """
-        
+
         # Ordering is qqpp in every sub-block; compensated by appropriate basis vector later
         def sub_loss_trace(eta_t, eta_d, eta_b):
             G = np.zeros((16, 16), dtype=np.complex128)
-           
+
             for i in range(4):
                 G[i, i+8] = (-1)
                 G[i, i+12] = (-1j)*(-1)
                 G[i+4, i+8] = (1j)*(-1)
                 G[i+4, i+12] = (-1)
             return (0.5)*G + (0.5)*np.transpose(G) + (0.5)*np.eye(16)
-        
+
         self.results["loss_bsm_matrix"] = sub_loss_trace(self.params["outcoupling_efficiency"], self.params["detection_efficiency"], self.params["bsm_efficiency"])
 
 
@@ -833,7 +899,7 @@ class SPDC:
         """
         Calculates the probability of success, which is the probability of generating a photon-photon state with the given parameters
         """
-        
+
         mds = 4  # Number of modes for our system
 
         # First, define our basis vector
@@ -844,7 +910,7 @@ class SPDC:
         self.calculate_k_function_matrix()
 
         nA = (self.results["k_function_matrix"] + self.results["loss_bsm_matrix"])
-        
+
         Gam = self.results["Gamma"]
 
         N1 = ((self.params["bsm_efficiency"])**2)
@@ -854,14 +920,14 @@ class SPDC:
         Coef = (N1)/(D1 * D2 * D3)
 
         C = 1
-        
+
         self.results["probability_success"] = Coef #Coef*tools.W(C,nA,x) #4 * Coef * val(ZALM.moment_vector(self.params["schmidt_coeffs"], 0), nAinv, x)
 
     def calculate_fidelity(self):
         """
         Calculates the fidelity of the photon-photon state with respect to the Bell state
         """
-        
+
         mds = 4  # Number of modes for our system
 
         # First, define our basis vector
@@ -892,7 +958,7 @@ class SPDC:
 
         Coef = (N1)/(2*D1*D2*D3)
 
-        
+
         self.results["fidelity"] = Coef*(F1 + F2 + F3 + F4) # np.array([F1, F2, F3, F4, Trc])
 
     def calculate_rho_nv1_nv2(self, mA, nv1, nv2):
@@ -906,15 +972,15 @@ class SPDC:
         """
         if self.status == 0:
             self.run()
-        
+
         nAnv = np.linalg.inv(mA)
-        
+
         # The loss matrix will be unique for calculating the probability of generation
         self.calculate_loss_bsm_matrix_fid()
         self.calculate_k_function_matrix()
 
         nA = (self.results["k_function_matrix"] + self.results["loss_bsm_matrix"])
-        
+
         Gam = self.results["Gamma"]
 
         etab = self.params["bsm_efficiency"]
@@ -927,11 +993,11 @@ class SPDC:
         Coef = (N1)/(D1 * D2 * D3)
 
         return  Coef*ZALM.dmijpp([1], nAnv, nv1, nv2) # This is the unnormalized density matrix element for the photon-photon density matrix
-    
+
     """
     Functions for calculating the spin-spin state
     """
-    
+
     def calculate_density_operator(self, nvec):
         """
         Arguments
@@ -941,20 +1007,20 @@ class SPDC:
         """
         if self.status == 0:
             self.run()
-        
+
         lmat = 4  # Number of modes for our system
         mat = np.zeros((lmat, lmat), dtype=np.complex128)
-        
+
         # Set the A matrix
         self.calculate_loss_matrix_fid()
         self.calculate_k_function_matrix()
         nA = self.results["k_function_matrix"] + self.results["loss_bsm_matrix"]
         nAnv = np.linalg.inv(nA)
-        
+
         for i in range(lmat):
             for j in range(lmat):
                 mat[i, j] = SPDC.dmijZ(i, j, nAnv, nvec, self.params["outcoupling_efficiency"], self.params["detection_efficiency"])
-       
+
         Gam = self.results["Gamma"]
         D1 = np.sqrt(np.linalg.det(nA))
         D2 = (np.linalg.det(Gam))**(0.25)
@@ -1006,7 +1072,7 @@ class SPDC:
 
         Coef = (1)/(8*D1*D2*D3)
 
-        
+
         self.results["fidelity_spin_spin"] = Coef*(F1n - F2n - F3n + F4n)/(F1d + F2d + F3d + F4d) # np.array([F1, F2, F3, F4, Trc])
 
     @staticmethod
@@ -1068,56 +1134,56 @@ class SPDC:
         etav = np.array([eta_t*eta_d, eta_t*eta_d, eta_t*eta_d, eta_t*eta_d])
 
         if dmi == 0:
-            Ca1 = ((alp[0]*np.sqrt(etav[0]) - alp[1]*np.sqrt(etav[1]))/(np.sqrt(2)))**(nvec[0]) 
-            Ca2 = ((alp[0]*np.sqrt(etav[0]) + alp[1]*np.sqrt(etav[1]))/(np.sqrt(2)))**(nvec[1])  
-            Ca3 = ((alp[2]*np.sqrt(etav[2]) - alp[3]*np.sqrt(etav[3]))/(np.sqrt(2)))**(nvec[2]) 
-            Ca4 = ((alp[2]*np.sqrt(etav[2]) + alp[3]*np.sqrt(etav[3]))/(np.sqrt(2)))**(nvec[3]) 
-            Ca = Ca1*Ca2*Ca3*Ca4 
+            Ca1 = ((alp[0]*np.sqrt(etav[0]) - alp[1]*np.sqrt(etav[1]))/(np.sqrt(2)))**(nvec[0])
+            Ca2 = ((alp[0]*np.sqrt(etav[0]) + alp[1]*np.sqrt(etav[1]))/(np.sqrt(2)))**(nvec[1])
+            Ca3 = ((alp[2]*np.sqrt(etav[2]) - alp[3]*np.sqrt(etav[3]))/(np.sqrt(2)))**(nvec[2])
+            Ca4 = ((alp[2]*np.sqrt(etav[2]) + alp[3]*np.sqrt(etav[3]))/(np.sqrt(2)))**(nvec[3])
+            Ca = Ca1*Ca2*Ca3*Ca4
         elif dmi == 1:
-            Ca1 = ((alp[0]*np.sqrt(etav[0]) - alp[1]*np.sqrt(etav[1]))/(np.sqrt(2)))**(nvec[0]) 
-            Ca2 = ((alp[0]*np.sqrt(etav[0]) + alp[1]*np.sqrt(etav[1]))/(np.sqrt(2)))**(nvec[1])  
-            Ca3 = ((alp[2]*np.sqrt(etav[2]) + alp[3]*np.sqrt(etav[3]))/(np.sqrt(2)))**(nvec[2]) 
-            Ca4 = ((alp[2]*np.sqrt(etav[2]) - alp[3]*np.sqrt(etav[3]))/(np.sqrt(2)))**(nvec[3]) 
-            Ca = Ca1*Ca2*Ca3*Ca4 
+            Ca1 = ((alp[0]*np.sqrt(etav[0]) - alp[1]*np.sqrt(etav[1]))/(np.sqrt(2)))**(nvec[0])
+            Ca2 = ((alp[0]*np.sqrt(etav[0]) + alp[1]*np.sqrt(etav[1]))/(np.sqrt(2)))**(nvec[1])
+            Ca3 = ((alp[2]*np.sqrt(etav[2]) + alp[3]*np.sqrt(etav[3]))/(np.sqrt(2)))**(nvec[2])
+            Ca4 = ((alp[2]*np.sqrt(etav[2]) - alp[3]*np.sqrt(etav[3]))/(np.sqrt(2)))**(nvec[3])
+            Ca = Ca1*Ca2*Ca3*Ca4
         elif dmi == 2:
-            Ca1 = ((alp[0]*np.sqrt(etav[0]) + alp[1]*np.sqrt(etav[1]))/(np.sqrt(2)))**(nvec[0]) 
-            Ca2 = ((alp[0]*np.sqrt(etav[0]) - alp[1]*np.sqrt(etav[1]))/(np.sqrt(2)))**(nvec[1])  
-            Ca3 = ((alp[2]*np.sqrt(etav[2]) - alp[3]*np.sqrt(etav[3]))/(np.sqrt(2)))**(nvec[2]) 
-            Ca4 = ((alp[2]*np.sqrt(etav[2]) + alp[3]*np.sqrt(etav[3]))/(np.sqrt(2)))**(nvec[3]) 
-            Ca = Ca1*Ca2*Ca3*Ca4 
+            Ca1 = ((alp[0]*np.sqrt(etav[0]) + alp[1]*np.sqrt(etav[1]))/(np.sqrt(2)))**(nvec[0])
+            Ca2 = ((alp[0]*np.sqrt(etav[0]) - alp[1]*np.sqrt(etav[1]))/(np.sqrt(2)))**(nvec[1])
+            Ca3 = ((alp[2]*np.sqrt(etav[2]) - alp[3]*np.sqrt(etav[3]))/(np.sqrt(2)))**(nvec[2])
+            Ca4 = ((alp[2]*np.sqrt(etav[2]) + alp[3]*np.sqrt(etav[3]))/(np.sqrt(2)))**(nvec[3])
+            Ca = Ca1*Ca2*Ca3*Ca4
         elif dmi == 3:
-            Ca1 = ((alp[0]*np.sqrt(etav[0]) + alp[1]*np.sqrt(etav[1]))/(np.sqrt(2)))**(nvec[0]) 
-            Ca2 = ((alp[0]*np.sqrt(etav[0]) - alp[1]*np.sqrt(etav[1]))/(np.sqrt(2)))**(nvec[1])  
-            Ca3 = ((alp[2]*np.sqrt(etav[2]) + alp[3]*np.sqrt(etav[3]))/(np.sqrt(2)))**(nvec[2]) 
-            Ca4 = ((alp[2]*np.sqrt(etav[2]) - alp[3]*np.sqrt(etav[3]))/(np.sqrt(2)))**(nvec[3]) 
-            Ca = Ca1*Ca2*Ca3*Ca4 
+            Ca1 = ((alp[0]*np.sqrt(etav[0]) + alp[1]*np.sqrt(etav[1]))/(np.sqrt(2)))**(nvec[0])
+            Ca2 = ((alp[0]*np.sqrt(etav[0]) - alp[1]*np.sqrt(etav[1]))/(np.sqrt(2)))**(nvec[1])
+            Ca3 = ((alp[2]*np.sqrt(etav[2]) + alp[3]*np.sqrt(etav[3]))/(np.sqrt(2)))**(nvec[2])
+            Ca4 = ((alp[2]*np.sqrt(etav[2]) - alp[3]*np.sqrt(etav[3]))/(np.sqrt(2)))**(nvec[3])
+            Ca = Ca1*Ca2*Ca3*Ca4
         else:
             Ca = 1
 
         if dmj == 0:
-            Cb1 = ((bet[0]*np.sqrt(etav[0]) - bet[1]*np.sqrt(etav[1]))/(np.sqrt(2)))**(nvec[0]) 
-            Cb2 = ((bet[0]*np.sqrt(etav[0]) + bet[1]*np.sqrt(etav[1]))/(np.sqrt(2)))**(nvec[1])  
-            Cb3 = ((bet[2]*np.sqrt(etav[2]) - bet[3]*np.sqrt(etav[3]))/(np.sqrt(2)))**(nvec[2]) 
-            Cb4 = ((bet[2]*np.sqrt(etav[2]) + bet[3]*np.sqrt(etav[3]))/(np.sqrt(2)))**(nvec[3]) 
-            Cb = Cb1*Cb2*Cb3*Cb4 
+            Cb1 = ((bet[0]*np.sqrt(etav[0]) - bet[1]*np.sqrt(etav[1]))/(np.sqrt(2)))**(nvec[0])
+            Cb2 = ((bet[0]*np.sqrt(etav[0]) + bet[1]*np.sqrt(etav[1]))/(np.sqrt(2)))**(nvec[1])
+            Cb3 = ((bet[2]*np.sqrt(etav[2]) - bet[3]*np.sqrt(etav[3]))/(np.sqrt(2)))**(nvec[2])
+            Cb4 = ((bet[2]*np.sqrt(etav[2]) + bet[3]*np.sqrt(etav[3]))/(np.sqrt(2)))**(nvec[3])
+            Cb = Cb1*Cb2*Cb3*Cb4
         elif dmj == 1:
-            Cb1 = ((bet[0]*np.sqrt(etav[0]) - bet[1]*np.sqrt(etav[1]))/(np.sqrt(2)))**(nvec[0]) 
-            Cb2 = ((bet[0]*np.sqrt(etav[0]) + bet[1]*np.sqrt(etav[1]))/(np.sqrt(2)))**(nvec[1])  
-            Cb3 = ((bet[2]*np.sqrt(etav[2]) + bet[3]*np.sqrt(etav[3]))/(np.sqrt(2)))**(nvec[2]) 
-            Cb4 = ((bet[2]*np.sqrt(etav[2]) - bet[3]*np.sqrt(etav[3]))/(np.sqrt(2)))**(nvec[3]) 
-            Cb = Cb1*Cb2*Cb3*Cb4 
+            Cb1 = ((bet[0]*np.sqrt(etav[0]) - bet[1]*np.sqrt(etav[1]))/(np.sqrt(2)))**(nvec[0])
+            Cb2 = ((bet[0]*np.sqrt(etav[0]) + bet[1]*np.sqrt(etav[1]))/(np.sqrt(2)))**(nvec[1])
+            Cb3 = ((bet[2]*np.sqrt(etav[2]) + bet[3]*np.sqrt(etav[3]))/(np.sqrt(2)))**(nvec[2])
+            Cb4 = ((bet[2]*np.sqrt(etav[2]) - bet[3]*np.sqrt(etav[3]))/(np.sqrt(2)))**(nvec[3])
+            Cb = Cb1*Cb2*Cb3*Cb4
         elif dmj == 2:
-            Cb1 = ((bet[0]*np.sqrt(etav[0]) + bet[1]*np.sqrt(etav[1]))/(np.sqrt(2)))**(nvec[0]) 
-            Cb2 = ((bet[0]*np.sqrt(etav[0]) - bet[1]*np.sqrt(etav[1]))/(np.sqrt(2)))**(nvec[1])  
-            Cb3 = ((bet[2]*np.sqrt(etav[2]) - bet[3]*np.sqrt(etav[3]))/(np.sqrt(2)))**(nvec[2]) 
-            Cb4 = ((bet[2]*np.sqrt(etav[2]) + bet[3]*np.sqrt(etav[3]))/(np.sqrt(2)))**(nvec[3]) 
-            Cb = Cb1*Cb2*Cb3*Cb4 
+            Cb1 = ((bet[0]*np.sqrt(etav[0]) + bet[1]*np.sqrt(etav[1]))/(np.sqrt(2)))**(nvec[0])
+            Cb2 = ((bet[0]*np.sqrt(etav[0]) - bet[1]*np.sqrt(etav[1]))/(np.sqrt(2)))**(nvec[1])
+            Cb3 = ((bet[2]*np.sqrt(etav[2]) - bet[3]*np.sqrt(etav[3]))/(np.sqrt(2)))**(nvec[2])
+            Cb4 = ((bet[2]*np.sqrt(etav[2]) + bet[3]*np.sqrt(etav[3]))/(np.sqrt(2)))**(nvec[3])
+            Cb = Cb1*Cb2*Cb3*Cb4
         elif dmj == 3:
-            Cb1 = ((bet[0]*np.sqrt(etav[0]) + bet[1]*np.sqrt(etav[1]))/(np.sqrt(2)))**(nvec[0]) 
-            Cb2 = ((bet[0]*np.sqrt(etav[0]) - bet[1]*np.sqrt(etav[1]))/(np.sqrt(2)))**(nvec[1])  
-            Cb3 = ((bet[2]*np.sqrt(etav[2]) + bet[3]*np.sqrt(etav[3]))/(np.sqrt(2)))**(nvec[2]) 
-            Cb4 = ((bet[2]*np.sqrt(etav[2]) - bet[3]*np.sqrt(etav[3]))/(np.sqrt(2)))**(nvec[3]) 
-            Cb = Cb1*Cb2*Cb3*Cb4 
+            Cb1 = ((bet[0]*np.sqrt(etav[0]) + bet[1]*np.sqrt(etav[1]))/(np.sqrt(2)))**(nvec[0])
+            Cb2 = ((bet[0]*np.sqrt(etav[0]) - bet[1]*np.sqrt(etav[1]))/(np.sqrt(2)))**(nvec[1])
+            Cb3 = ((bet[2]*np.sqrt(etav[2]) + bet[3]*np.sqrt(etav[3]))/(np.sqrt(2)))**(nvec[2])
+            Cb4 = ((bet[2]*np.sqrt(etav[2]) - bet[3]*np.sqrt(etav[3]))/(np.sqrt(2)))**(nvec[3])
+            Cb = Cb1*Cb2*Cb3*Cb4
         else:
             Cb = 1
 
@@ -1179,56 +1245,56 @@ class SPDC:
         etav = np.array([eta_t*eta_d, eta_t*eta_d, eta_b, eta_b, eta_b, eta_b, eta_t*eta_d, eta_t*eta_d])
 
         if Ai == 1:
-            Ca1 = ((alp[0]*np.sqrt(etav[0]) - alp[1]*np.sqrt(etav[1]))/(np.sqrt(2)))**(nvec[0]) 
-            Ca2 = ((alp[0]*np.sqrt(etav[0]) + alp[1]*np.sqrt(etav[1]))/(np.sqrt(2)))**(nvec[1])  
-            Ca3 = ((alp[2]*np.sqrt(etav[2]) - alp[3]*np.sqrt(etav[3]))/(np.sqrt(2)))**(nvec[2]) 
-            Ca4 = ((alp[2]*np.sqrt(etav[2]) + alp[3]*np.sqrt(etav[3]))/(np.sqrt(2)))**(nvec[3]) 
-            Ca = Ca1*Ca2*Ca3*Ca4 
+            Ca1 = ((alp[0]*np.sqrt(etav[0]) - alp[1]*np.sqrt(etav[1]))/(np.sqrt(2)))**(nvec[0])
+            Ca2 = ((alp[0]*np.sqrt(etav[0]) + alp[1]*np.sqrt(etav[1]))/(np.sqrt(2)))**(nvec[1])
+            Ca3 = ((alp[2]*np.sqrt(etav[2]) - alp[3]*np.sqrt(etav[3]))/(np.sqrt(2)))**(nvec[2])
+            Ca4 = ((alp[2]*np.sqrt(etav[2]) + alp[3]*np.sqrt(etav[3]))/(np.sqrt(2)))**(nvec[3])
+            Ca = Ca1*Ca2*Ca3*Ca4
         elif Ai == 2:
-            Ca1 = ((alp[0]*np.sqrt(etav[0]) - alp[1]*np.sqrt(etav[1]))/(np.sqrt(2)))**(nvec[0]) 
-            Ca2 = ((alp[0]*np.sqrt(etav[0]) + alp[1]*np.sqrt(etav[1]))/(np.sqrt(2)))**(nvec[1])  
-            Ca3 = ((alp[2]*np.sqrt(etav[2]) + alp[3]*np.sqrt(etav[3]))/(np.sqrt(2)))**(nvec[2]) 
-            Ca4 = ((alp[2]*np.sqrt(etav[2]) - alp[3]*np.sqrt(etav[3]))/(np.sqrt(2)))**(nvec[3]) 
-            Ca = Ca1*Ca2*Ca3*Ca4 
+            Ca1 = ((alp[0]*np.sqrt(etav[0]) - alp[1]*np.sqrt(etav[1]))/(np.sqrt(2)))**(nvec[0])
+            Ca2 = ((alp[0]*np.sqrt(etav[0]) + alp[1]*np.sqrt(etav[1]))/(np.sqrt(2)))**(nvec[1])
+            Ca3 = ((alp[2]*np.sqrt(etav[2]) + alp[3]*np.sqrt(etav[3]))/(np.sqrt(2)))**(nvec[2])
+            Ca4 = ((alp[2]*np.sqrt(etav[2]) - alp[3]*np.sqrt(etav[3]))/(np.sqrt(2)))**(nvec[3])
+            Ca = Ca1*Ca2*Ca3*Ca4
         elif Ai == 3:
-            Ca1 = ((alp[0]*np.sqrt(etav[0]) + alp[1]*np.sqrt(etav[1]))/(np.sqrt(2)))**(nvec[0]) 
-            Ca2 = ((alp[0]*np.sqrt(etav[0]) - alp[1]*np.sqrt(etav[1]))/(np.sqrt(2)))**(nvec[1])  
-            Ca3 = ((alp[2]*np.sqrt(etav[2]) - alp[3]*np.sqrt(etav[3]))/(np.sqrt(2)))**(nvec[2]) 
-            Ca4 = ((alp[2]*np.sqrt(etav[2]) + alp[3]*np.sqrt(etav[3]))/(np.sqrt(2)))**(nvec[3]) 
-            Ca = Ca1*Ca2*Ca3*Ca4 
+            Ca1 = ((alp[0]*np.sqrt(etav[0]) + alp[1]*np.sqrt(etav[1]))/(np.sqrt(2)))**(nvec[0])
+            Ca2 = ((alp[0]*np.sqrt(etav[0]) - alp[1]*np.sqrt(etav[1]))/(np.sqrt(2)))**(nvec[1])
+            Ca3 = ((alp[2]*np.sqrt(etav[2]) - alp[3]*np.sqrt(etav[3]))/(np.sqrt(2)))**(nvec[2])
+            Ca4 = ((alp[2]*np.sqrt(etav[2]) + alp[3]*np.sqrt(etav[3]))/(np.sqrt(2)))**(nvec[3])
+            Ca = Ca1*Ca2*Ca3*Ca4
         elif Ai == 4:
-            Ca1 = ((alp[0]*np.sqrt(etav[0]) + alp[1]*np.sqrt(etav[1]))/(np.sqrt(2)))**(nvec[0]) 
-            Ca2 = ((alp[0]*np.sqrt(etav[0]) - alp[1]*np.sqrt(etav[1]))/(np.sqrt(2)))**(nvec[1])  
-            Ca3 = ((alp[2]*np.sqrt(etav[2]) + alp[3]*np.sqrt(etav[3]))/(np.sqrt(2)))**(nvec[2]) 
-            Ca4 = ((alp[2]*np.sqrt(etav[2]) - alp[3]*np.sqrt(etav[3]))/(np.sqrt(2)))**(nvec[3]) 
-            Ca = Ca1*Ca2*Ca3*Ca4 
+            Ca1 = ((alp[0]*np.sqrt(etav[0]) + alp[1]*np.sqrt(etav[1]))/(np.sqrt(2)))**(nvec[0])
+            Ca2 = ((alp[0]*np.sqrt(etav[0]) - alp[1]*np.sqrt(etav[1]))/(np.sqrt(2)))**(nvec[1])
+            Ca3 = ((alp[2]*np.sqrt(etav[2]) + alp[3]*np.sqrt(etav[3]))/(np.sqrt(2)))**(nvec[2])
+            Ca4 = ((alp[2]*np.sqrt(etav[2]) - alp[3]*np.sqrt(etav[3]))/(np.sqrt(2)))**(nvec[3])
+            Ca = Ca1*Ca2*Ca3*Ca4
         else:
             Ca = 1
 
         if Bj == 1:
-            Cb1 = ((bet[0]*np.sqrt(etav[0]) - bet[1]*np.sqrt(etav[1]))/(np.sqrt(2)))**(nvec[0]) 
-            Cb2 = ((bet[0]*np.sqrt(etav[0]) + bet[1]*np.sqrt(etav[1]))/(np.sqrt(2)))**(nvec[1])  
-            Cb3 = ((bet[2]*np.sqrt(etav[2]) - bet[3]*np.sqrt(etav[3]))/(np.sqrt(2)))**(nvec[2]) 
-            Cb4 = ((bet[2]*np.sqrt(etav[2]) + bet[3]*np.sqrt(etav[3]))/(np.sqrt(2)))**(nvec[3]) 
-            Cb = Cb1*Cb2*Cb3*Cb4 
+            Cb1 = ((bet[0]*np.sqrt(etav[0]) - bet[1]*np.sqrt(etav[1]))/(np.sqrt(2)))**(nvec[0])
+            Cb2 = ((bet[0]*np.sqrt(etav[0]) + bet[1]*np.sqrt(etav[1]))/(np.sqrt(2)))**(nvec[1])
+            Cb3 = ((bet[2]*np.sqrt(etav[2]) - bet[3]*np.sqrt(etav[3]))/(np.sqrt(2)))**(nvec[2])
+            Cb4 = ((bet[2]*np.sqrt(etav[2]) + bet[3]*np.sqrt(etav[3]))/(np.sqrt(2)))**(nvec[3])
+            Cb = Cb1*Cb2*Cb3*Cb4
         elif Bj == 2:
-            Cb1 = ((bet[0]*np.sqrt(etav[0]) - bet[1]*np.sqrt(etav[1]))/(np.sqrt(2)))**(nvec[0]) 
-            Cb2 = ((bet[0]*np.sqrt(etav[0]) + bet[1]*np.sqrt(etav[1]))/(np.sqrt(2)))**(nvec[1])  
-            Cb3 = ((bet[2]*np.sqrt(etav[2]) + bet[3]*np.sqrt(etav[3]))/(np.sqrt(2)))**(nvec[2]) 
-            Cb4 = ((bet[2]*np.sqrt(etav[2]) - bet[3]*np.sqrt(etav[3]))/(np.sqrt(2)))**(nvec[3]) 
-            Cb = Cb1*Cb2*Cb3*Cb4 
+            Cb1 = ((bet[0]*np.sqrt(etav[0]) - bet[1]*np.sqrt(etav[1]))/(np.sqrt(2)))**(nvec[0])
+            Cb2 = ((bet[0]*np.sqrt(etav[0]) + bet[1]*np.sqrt(etav[1]))/(np.sqrt(2)))**(nvec[1])
+            Cb3 = ((bet[2]*np.sqrt(etav[2]) + bet[3]*np.sqrt(etav[3]))/(np.sqrt(2)))**(nvec[2])
+            Cb4 = ((bet[2]*np.sqrt(etav[2]) - bet[3]*np.sqrt(etav[3]))/(np.sqrt(2)))**(nvec[3])
+            Cb = Cb1*Cb2*Cb3*Cb4
         elif Bj == 3:
-            Cb1 = ((bet[0]*np.sqrt(etav[0]) + bet[1]*np.sqrt(etav[1]))/(np.sqrt(2)))**(nvec[0]) 
-            Cb2 = ((bet[0]*np.sqrt(etav[0]) - bet[1]*np.sqrt(etav[1]))/(np.sqrt(2)))**(nvec[1])  
-            Cb3 = ((bet[2]*np.sqrt(etav[2]) - bet[3]*np.sqrt(etav[3]))/(np.sqrt(2)))**(nvec[2]) 
-            Cb4 = ((bet[2]*np.sqrt(etav[2]) + bet[3]*np.sqrt(etav[3]))/(np.sqrt(2)))**(nvec[3]) 
-            Cb = Cb1*Cb2*Cb3*Cb4 
+            Cb1 = ((bet[0]*np.sqrt(etav[0]) + bet[1]*np.sqrt(etav[1]))/(np.sqrt(2)))**(nvec[0])
+            Cb2 = ((bet[0]*np.sqrt(etav[0]) - bet[1]*np.sqrt(etav[1]))/(np.sqrt(2)))**(nvec[1])
+            Cb3 = ((bet[2]*np.sqrt(etav[2]) - bet[3]*np.sqrt(etav[3]))/(np.sqrt(2)))**(nvec[2])
+            Cb4 = ((bet[2]*np.sqrt(etav[2]) + bet[3]*np.sqrt(etav[3]))/(np.sqrt(2)))**(nvec[3])
+            Cb = Cb1*Cb2*Cb3*Cb4
         elif Bj == 4:
-            Cb1 = ((bet[0]*np.sqrt(etav[0]) + bet[1]*np.sqrt(etav[1]))/(np.sqrt(2)))**(nvec[0]) 
-            Cb2 = ((bet[0]*np.sqrt(etav[0]) - bet[1]*np.sqrt(etav[1]))/(np.sqrt(2)))**(nvec[1])  
-            Cb3 = ((bet[2]*np.sqrt(etav[2]) + bet[3]*np.sqrt(etav[3]))/(np.sqrt(2)))**(nvec[2]) 
-            Cb4 = ((bet[2]*np.sqrt(etav[2]) - bet[3]*np.sqrt(etav[3]))/(np.sqrt(2)))**(nvec[3]) 
-            Cb = Cb1*Cb2*Cb3*Cb4 
+            Cb1 = ((bet[0]*np.sqrt(etav[0]) + bet[1]*np.sqrt(etav[1]))/(np.sqrt(2)))**(nvec[0])
+            Cb2 = ((bet[0]*np.sqrt(etav[0]) - bet[1]*np.sqrt(etav[1]))/(np.sqrt(2)))**(nvec[1])
+            Cb3 = ((bet[2]*np.sqrt(etav[2]) + bet[3]*np.sqrt(etav[3]))/(np.sqrt(2)))**(nvec[2])
+            Cb4 = ((bet[2]*np.sqrt(etav[2]) - bet[3]*np.sqrt(etav[3]))/(np.sqrt(2)))**(nvec[3])
+            Cb = Cb1*Cb2*Cb3*Cb4
         else:
             Cb = 1
 
@@ -1263,13 +1329,13 @@ class SPDC:
         Output
         - The unnormalized density matrix element corresponding to the Cni and Anv
         """
-        
+
         elm = 0
         for i in Cni:
             a = tools.wick_coupling_mat_list(i,xb)
             elm += tools.wick_out(a, Anv)
         return elm
-    
+
 
 
 
@@ -1284,7 +1350,7 @@ class SPDC:
         Output
         - The covariance matrix of the SPDC source in the qpqp ordering
         """
-        
+
         # Ordering qpqp
         # Mode swap for polarization entnaglement
         permutation_indices = [0, 1, 6, 7, 4, 5, 2, 3]
@@ -1327,7 +1393,7 @@ class SPDC:
 
         Ca1 = alp[0] * alp[3]
         Ca2 = alp[1] * alp[2]
-        Cb1 = bet[0] * bet[3] 
+        Cb1 = bet[0] * bet[3]
         Cb2 = bet[1] * bet[2]
 
 
@@ -1360,7 +1426,7 @@ class SPDC:
             Coutf.append(tools.expand_powers_to_symbols(i))
 
         return Coutf
-  
+
 class ZALM:
 
     def __init__(self, param=TYP_PARAMS):
@@ -1418,7 +1484,7 @@ class ZALM:
                     [-np.sqrt(0.5), 0, np.sqrt(0.5),0],[0,0,0,1]])
         St46 = np.array([[1, 0, 0, 0],[0,np.sqrt(0.5),0,np.sqrt(0.5)],
                     [0, 0, 1, 0],[0,-np.sqrt(0.5),0,np.sqrt(0.5)]])
-        
+
         S35 = block_diag(Id2, St35, Id2, Id2, St35, Id2)
         S46 = block_diag(Id2, St46, Id2, Id2, St46, Id2)
 
@@ -1431,7 +1497,7 @@ class ZALM:
         Gamma = self.results["covariance_matrix"] + 0.5 * np.eye(
             self.results["covariance_matrix"].shape[0]
         )
-    
+
         self.results["Gamma"] = Gamma
         Gamma_inverse = np.linalg.inv(Gamma)
 
@@ -1476,7 +1542,7 @@ class ZALM:
                     G[i+8, i+16] = (1j)*(eta[i] - 1)
                     G[i+8, i+24] = (eta[i] - 1)
             return (0.5)*G + (0.5)*np.transpose(G) + (1/2)*np.eye(32)
-        
+
         self.results["loss_bsm_matrix"] = sub_loss_pgen(self.params["outcoupling_efficiency"], self.params["detection_efficiency"], self.params["bsm_efficiency"])
         return sub_loss_pgen(self.params["outcoupling_efficiency"], self.params["detection_efficiency"], self.params["bsm_efficiency"])
 
@@ -1484,12 +1550,12 @@ class ZALM:
         """
         Calculating the loss portion of the A matrix, specifically when calculating the fidelity
         """
-        
+
         # Ordering is qqpp in every sub-block; compensated by appropriate basis vector later
         def sub_loss_fid(eta_t, eta_d, eta_b):
             G = np.zeros((32, 32), dtype=np.complex128)
             eta = np.array([eta_t*eta_d, eta_t*eta_d, eta_b, eta_b, eta_b, eta_b, eta_t*eta_d, eta_t*eta_d])
-            
+
             for i in range(8):
                 G[i, i+16] = (eta[i] - 1)
                 G[i, i+24] = -1j*(eta[i] - 1)
@@ -1504,7 +1570,7 @@ class ZALM:
         """
         Calculating the loss portion of the A matrix, specifically when calculating the trace of the matrix
         """
-        
+
         # Ordering is qqpp in every sub-block; compensated by appropriate basis vector later
         def sub_loss_trace(eta_t, eta_d, eta_b):
             G = np.zeros((32, 32), dtype=np.complex128)
@@ -1516,7 +1582,7 @@ class ZALM:
                 G[i+8, i+16] = (1j)*(-1)
                 G[i+8, i+24] = (-1)
             return G + np.transpose(G) + (1/2)*np.eye(32)
-        
+
         self.results["loss_bsm_matrix"] = sub_loss_trace(self.params["outcoupling_efficiency"], self.params["detection_efficiency"], self.params["bsm_efficiency"])
 
     """
@@ -1527,7 +1593,7 @@ class ZALM:
         """
         Calculate the probability of success for the photon-photon single-mode ZALM source
         """
-        
+
         mds = 8  # Number of modes for our system
 
         # First, define our basis vector
@@ -1538,7 +1604,7 @@ class ZALM:
         self.calculate_k_function_matrix()
 
         nA = (self.results["k_function_matrix"] + self.results["loss_bsm_matrix"])
-        
+
         Gam = self.results["Gamma"]
 
         # # For the case of no dark clicks
@@ -1549,9 +1615,9 @@ class ZALM:
         # Coef = (N1)/(D1 * D2 * D3)
 
         # C = ZALM.moment_vector([1], 0)
-        
+
         # self.results["probability_success"] = Coef*tools.W(C,nA,x) #4 * Coef * val(ZALM.moment_vector(self.params["schmidt_coeffs"], 0), nAinv, x)
-        
+
         # Including dark clicks
         D1 = np.sqrt(np.linalg.det(nA))
         D2 = (np.linalg.det(Gam))**(0.25)
@@ -1574,7 +1640,7 @@ class ZALM:
         """
         Calculate the fidelity with respect to the Bell state for the photon-photon single-mode ZALM source
         """
-        
+
         mds = 8  # Number of modes for our system
 
         # First, define our basis vector
@@ -1609,7 +1675,7 @@ class ZALM:
         Coef = (N1*N2)/(2*D1)
 
         Trc = tools.W(Cn0, nA2, x)
-        
+
         self.results["fidelity"] = Coef*(F1 + F2 + F3 + F4)/(Trc) # np.array([F1, F2, F3, F4, Trc])
 
     def calculate_rho_nv1_nv2(self, mA, nv1, nv2):
@@ -1623,15 +1689,15 @@ class ZALM:
         """
         if self.status == 0:
             self.run()
-        
+
         nAnv = np.linalg.inv(mA)
-        
+
         # The loss matrix will be unique for calculating the probability of generation
         self.calculate_loss_bsm_matrix_fid()
         self.calculate_k_function_matrix()
 
         nA = (self.results["k_function_matrix"] + self.results["loss_bsm_matrix"])
-        
+
         Gam = self.results["Gamma"]
 
         etab = self.params["bsm_efficiency"]
@@ -1644,7 +1710,7 @@ class ZALM:
         Coef = (N1)/(D1 * D2 * D3)
 
         return  Coef*ZALM.dmijpp([1], nAnv, nv1, nv2) # This is the unnormalized density matrix element for the photon-photon density matrix
-    
+
 
     """
     Functions that use the hafnian approach instead of directly calculating via Wick's theorem
@@ -1674,7 +1740,7 @@ class ZALM:
         b6s = np.array([np.array([1/np.sqrt(2),22]),np.array([-1j/np.sqrt(2),30])])
         b7s = np.array([np.array([1/np.sqrt(2),23]),np.array([-1j/np.sqrt(2),31])])
         b8s = np.array([np.array([1/np.sqrt(2),24]),np.array([-1j/np.sqrt(2),32])])
-        
+
         mvec1 = [a1, a2, a3, a4, a5, a6, a7, a8]
         mvec2 = [b1s, b2s, b3s, b4s, b5s, b6s, b7s, b8s]
         mlv = []
@@ -1689,12 +1755,12 @@ class ZALM:
                 j = 0
                 while j < nvec2[i]:
                     mlv.append(mvec2[i])
-                    j += 1 
+                    j += 1
 
         mlv_tst = tools.multiply_location_vectors_n(mlv)
 
         return mlv_tst
-    
+
     def calculate_rho_nv1_nv2_haf(self, Am, nv1, nv2):
         """
         Arguments
@@ -1706,7 +1772,7 @@ class ZALM:
         """
         if self.status == 0:
             self.run()
-        
+
         # Set the C coefficient
         Cn = ZALM.moment_vector_haf(nv1, nv2)
 
@@ -1720,7 +1786,7 @@ class ZALM:
                 ca *= ((etv[i])**n1[i])/(np.sqrt(math.factorial(n1[i])))
                 cb *= ((etv[i])**n2[i])/(np.sqrt(math.factorial(n2[i])))
             return ca*cb
-        
+
         etat = self.params["outcoupling_efficiency"]
         etad = self.params["detection_efficiency"]
         etab = self.params["bsm_efficiency"]
@@ -1730,7 +1796,7 @@ class ZALM:
         self.calculate_k_function_matrix()
 
         nA = (self.results["k_function_matrix"] + self.results["loss_bsm_matrix"])
-        
+
         Gam = self.results["Gamma"]
 
         # For the case of no dark clicks
@@ -1741,7 +1807,7 @@ class ZALM:
         Coef = (N1)/(D1 * D2 * D3)
 
         return  Coef*Cof(etat, etad, etab, nv1, nv2)*tools.W_haf(Cn, Am) # This is the unnormalized density matrix element
-    
+
 
     """
     Functions for calculating the complete photon-photon density matrix up to 4 photons
@@ -1764,7 +1830,7 @@ class ZALM:
                 vec[bin_idx] += 1
             b.append(vec)
         return b
-    
+
     @staticmethod
     def density_matrix_elms(n):
         """
@@ -1807,7 +1873,7 @@ class ZALM:
         """
         Creates a density matrix basis vector for n photons in 8 modes following BSM
         """
-        
+
         # Constructing the complete basis vector with only the BSM successes
         for i in range(0,n+1):
             if i == 0:
@@ -1824,7 +1890,7 @@ class ZALM:
                 for j in range(0,len(bi)):
                     if bi[j][2] == 1 and bi[j][3] == 1 and bi[j][4] == 0 and bi[j][5] == 0:
                         bg.append(bi[j])
-                
+
                 # Appending vector for Configurations with i photons in 8 modes
                 b = b + bg
 
@@ -1855,12 +1921,12 @@ class ZALM:
     def get_density_matrix_bv_element(dmat, bra_idx, ket_idx):
         """
         Extract a specific density matrix element from the DataFrame
-        
+
         Parameters:
         dmat (DataFrame): DataFrame containing the density matrix elements
         bra_idx (int): Index of the bra state
         ket_idx (int): Index of the ket state
-        
+
         Returns:
         tuple: (bra_state, ket_state) for the requested indices
         """
@@ -1892,12 +1958,12 @@ class ZALM:
             for j in tqdm(range(0,495)):
                 n1 = ZALM.get_density_matrix_bv_element(ZALM.density_matrix_elms(4), i, j)[0]
                 n2 = ZALM.get_density_matrix_bv_element(ZALM.density_matrix_elms(4), i, j)[1]
-                
+
                 if (np.sum(n1) + np.sum(n2))%2 == 1:
                     rho[i,j] = 0
                 else:
                     rho[i,j] = Coef*self.calculate_rho_nv1_nv2_haf(nA, n1, n2)
-        
+
         self.results["density_matrix"] = rho
         return rho
 
@@ -1932,7 +1998,7 @@ class ZALM:
                     rho[i,j] = 0
                 else:
                     rho[i,j] = Coef*self.calculate_rho_nv1_nv2_haf(nA, n1, n2)
-        
+
         self.results["density_matrix_post_bsm"] = rho
         return rho
 
@@ -1964,7 +2030,7 @@ class ZALM:
             #     Pgen += 0
             # else:
             #     Pgen += Coef*self.calculate_rho_nv1_nv2_haf(nA, n1, n2)
-        
+
         self.results["fock_pgen"] = Pgen
         return Pgen
 
@@ -1996,7 +2062,7 @@ class ZALM:
             #     Pgen += 0
             # else:
             #     Pgen += Coef*self.calculate_rho_nv1_nv2_haf(nA, n1, n2)
-        
+
         self.results["fock_pgen"] = Pgen
         return Pgen
 
@@ -2043,20 +2109,20 @@ class ZALM:
         """
         if self.status == 0:
             self.run()
-        
+
         lmat = 4  # Number of modes for our system
         mat = np.zeros((lmat, lmat), dtype=np.complex128)
-        
+
         # Set the A matrix
         self.calculate_loss_bsm_matrix_fid()
         self.calculate_k_function_matrix()
         nA = self.results["k_function_matrix"] + self.results["loss_bsm_matrix"]
         nAnv = np.linalg.inv(nA)
-        
+
         for i in range(lmat):
             for j in range(lmat):
                 mat[i, j] = ZALM.dmijZ([1], i, j, nAnv, nvec, self.params["outcoupling_efficiency"], self.params["detection_efficiency"], self.params["bsm_efficiency"])
-       
+
         self.results["output_state"] = mat # This is the unnormalized density matrix
 
     @staticmethod
@@ -2083,6 +2149,33 @@ class ZALM:
         # Define the matrix element
         Cn = ZALM.moment_vector_with_memory(lamvec, dmi, dmj, nvec, eta_t, eta_d, eta_b)
 
+        return ZALM.dmatval_do_not_store_looping_pattern(Cn, nAinv, x)
+
+    @staticmethod
+    def dmijZ_old(lamvec, dmi, dmj, nAinv, nvec, eta_t, eta_d, eta_b):
+        """
+        Arguments:
+        - nAinv: The numerical inverse of the A matrix
+        - lamvec: The vectors of lambdas for the system
+        - dmi: The row number for the cooresponding density matrix element
+        - dmj: The collumn number for the cooresponding density matrix element
+        - nvec: The vector of n_i's for the system, where n_i is the number of photons in mode i
+        - eta_t: The transmission efficiency
+        - eta_d: The detection efficiency
+        - eta_b: The Bell state measurement efficiency
+        Output:
+        - The density matrix element for the ZALM source
+        """
+
+        mds = 8*len(lamvec) # Number of modes for our system
+
+        # First, define our basis vector which cooresponds to the A matrix
+        x = ZALM.basisvZ(mds)
+
+        # Define the matrix element
+        Cn = ZALM.moment_vector_with_memory(lamvec, dmi, dmj, nvec, eta_t, eta_d, eta_b)
+
+        #return ZALM.dmatval(Cn, nAinv, x)
         return ZALM.dmatval(Cn, nAinv, x)
 
     def moment_vector_with_memory_poly(lambda_vector, dmi, dmj, nvec, eta_t, eta_d, eta_b):
@@ -2257,62 +2350,62 @@ class ZALM:
                 (1 / np.sqrt(2)) * (qbi[j] - sp.I * pbi[j])
             )  # We have already taken the complex conjugate
             j += 1
-        
+
         etav = np.array([eta_t*eta_d, eta_t*eta_d, eta_b, eta_b, eta_b, eta_b, eta_t*eta_d, eta_t*eta_d])
 
         # Calculate Ca based on dmi value
         if dmi == 0:
-            Ca1 = ((alp[0]*np.sqrt(etav[0]) - alp[1]*np.sqrt(etav[1]))/(np.sqrt(2)))**(nvec[0]) 
-            Ca2 = ((alp[0]*np.sqrt(etav[0]) + alp[1]*np.sqrt(etav[1]))/(np.sqrt(2)))**(nvec[1])  
-            Ca3 = ((alp[6]*np.sqrt(etav[6]) - alp[7]*np.sqrt(etav[7]))/(np.sqrt(2)))**(nvec[6]) 
-            Ca4 = ((alp[6]*np.sqrt(etav[6]) + alp[7]*np.sqrt(etav[7]))/(np.sqrt(2)))**(nvec[7]) 
-            Ca = Ca1*Ca2*Ca3*Ca4 
+            Ca1 = ((alp[0]*np.sqrt(etav[0]) - alp[1]*np.sqrt(etav[1]))/(np.sqrt(2)))**(nvec[0])
+            Ca2 = ((alp[0]*np.sqrt(etav[0]) + alp[1]*np.sqrt(etav[1]))/(np.sqrt(2)))**(nvec[1])
+            Ca3 = ((alp[6]*np.sqrt(etav[6]) - alp[7]*np.sqrt(etav[7]))/(np.sqrt(2)))**(nvec[6])
+            Ca4 = ((alp[6]*np.sqrt(etav[6]) + alp[7]*np.sqrt(etav[7]))/(np.sqrt(2)))**(nvec[7])
+            Ca = Ca1*Ca2*Ca3*Ca4
         elif dmi == 1:
-            Ca1 = ((alp[0]*np.sqrt(etav[0]) - alp[1]*np.sqrt(etav[1]))/(np.sqrt(2)))**(nvec[0]) 
-            Ca2 = ((alp[0]*np.sqrt(etav[0]) + alp[1]*np.sqrt(etav[1]))/(np.sqrt(2)))**(nvec[1])  
-            Ca3 = ((alp[6]*np.sqrt(etav[6]) + alp[7]*np.sqrt(etav[7]))/(np.sqrt(2)))**(nvec[6]) 
-            Ca4 = ((alp[6]*np.sqrt(etav[6]) - alp[7]*np.sqrt(etav[7]))/(np.sqrt(2)))**(nvec[7]) 
-            Ca = Ca1*Ca2*Ca3*Ca4 
+            Ca1 = ((alp[0]*np.sqrt(etav[0]) - alp[1]*np.sqrt(etav[1]))/(np.sqrt(2)))**(nvec[0])
+            Ca2 = ((alp[0]*np.sqrt(etav[0]) + alp[1]*np.sqrt(etav[1]))/(np.sqrt(2)))**(nvec[1])
+            Ca3 = ((alp[6]*np.sqrt(etav[6]) + alp[7]*np.sqrt(etav[7]))/(np.sqrt(2)))**(nvec[6])
+            Ca4 = ((alp[6]*np.sqrt(etav[6]) - alp[7]*np.sqrt(etav[7]))/(np.sqrt(2)))**(nvec[7])
+            Ca = Ca1*Ca2*Ca3*Ca4
         elif dmi == 2:
-            Ca1 = ((alp[0]*np.sqrt(etav[0]) + alp[1]*np.sqrt(etav[1]))/(np.sqrt(2)))**(nvec[0]) 
-            Ca2 = ((alp[0]*np.sqrt(etav[0]) - alp[1]*np.sqrt(etav[1]))/(np.sqrt(2)))**(nvec[1])  
-            Ca3 = ((alp[6]*np.sqrt(etav[6]) - alp[7]*np.sqrt(etav[7]))/(np.sqrt(2)))**(nvec[6]) 
-            Ca4 = ((alp[6]*np.sqrt(etav[6]) + alp[7]*np.sqrt(etav[7]))/(np.sqrt(2)))**(nvec[7]) 
-            Ca = Ca1*Ca2*Ca3*Ca4 
+            Ca1 = ((alp[0]*np.sqrt(etav[0]) + alp[1]*np.sqrt(etav[1]))/(np.sqrt(2)))**(nvec[0])
+            Ca2 = ((alp[0]*np.sqrt(etav[0]) - alp[1]*np.sqrt(etav[1]))/(np.sqrt(2)))**(nvec[1])
+            Ca3 = ((alp[6]*np.sqrt(etav[6]) - alp[7]*np.sqrt(etav[7]))/(np.sqrt(2)))**(nvec[6])
+            Ca4 = ((alp[6]*np.sqrt(etav[6]) + alp[7]*np.sqrt(etav[7]))/(np.sqrt(2)))**(nvec[7])
+            Ca = Ca1*Ca2*Ca3*Ca4
         elif dmi == 3:
-            Ca1 = ((alp[0]*np.sqrt(etav[0]) + alp[1]*np.sqrt(etav[1]))/(np.sqrt(2)))**(nvec[0]) 
-            Ca2 = ((alp[0]*np.sqrt(etav[0]) - alp[1]*np.sqrt(etav[1]))/(np.sqrt(2)))**(nvec[1])  
-            Ca3 = ((alp[6]*np.sqrt(etav[6]) + alp[7]*np.sqrt(etav[7]))/(np.sqrt(2)))**(nvec[6]) 
-            Ca4 = ((alp[6]*np.sqrt(etav[6]) - alp[7]*np.sqrt(etav[7]))/(np.sqrt(2)))**(nvec[7]) 
-            Ca = Ca1*Ca2*Ca3*Ca4 
+            Ca1 = ((alp[0]*np.sqrt(etav[0]) + alp[1]*np.sqrt(etav[1]))/(np.sqrt(2)))**(nvec[0])
+            Ca2 = ((alp[0]*np.sqrt(etav[0]) - alp[1]*np.sqrt(etav[1]))/(np.sqrt(2)))**(nvec[1])
+            Ca3 = ((alp[6]*np.sqrt(etav[6]) + alp[7]*np.sqrt(etav[7]))/(np.sqrt(2)))**(nvec[6])
+            Ca4 = ((alp[6]*np.sqrt(etav[6]) - alp[7]*np.sqrt(etav[7]))/(np.sqrt(2)))**(nvec[7])
+            Ca = Ca1*Ca2*Ca3*Ca4
         else:
             Ca = 1
 
         # Calculate Cb based on dmj value
         if dmj == 0:
-            Cb1 = ((bet[0]*np.sqrt(etav[0]) - bet[1]*np.sqrt(etav[1]))/(np.sqrt(2)))**(nvec[0]) 
-            Cb2 = ((bet[0]*np.sqrt(etav[0]) + bet[1]*np.sqrt(etav[1]))/(np.sqrt(2)))**(nvec[1])  
-            Cb3 = ((bet[6]*np.sqrt(etav[6]) - bet[7]*np.sqrt(etav[7]))/(np.sqrt(2)))**(nvec[6]) 
-            Cb4 = ((bet[6]*np.sqrt(etav[6]) + bet[7]*np.sqrt(etav[7]))/(np.sqrt(2)))**(nvec[7]) 
-            Cb = Cb1*Cb2*Cb3*Cb4 
+            Cb1 = ((bet[0]*np.sqrt(etav[0]) - bet[1]*np.sqrt(etav[1]))/(np.sqrt(2)))**(nvec[0])
+            Cb2 = ((bet[0]*np.sqrt(etav[0]) + bet[1]*np.sqrt(etav[1]))/(np.sqrt(2)))**(nvec[1])
+            Cb3 = ((bet[6]*np.sqrt(etav[6]) - bet[7]*np.sqrt(etav[7]))/(np.sqrt(2)))**(nvec[6])
+            Cb4 = ((bet[6]*np.sqrt(etav[6]) + bet[7]*np.sqrt(etav[7]))/(np.sqrt(2)))**(nvec[7])
+            Cb = Cb1*Cb2*Cb3*Cb4
         elif dmj == 1:
-            Cb1 = ((bet[0]*np.sqrt(etav[0]) - bet[1]*np.sqrt(etav[1]))/(np.sqrt(2)))**(nvec[0]) 
-            Cb2 = ((bet[0]*np.sqrt(etav[0]) + bet[1]*np.sqrt(etav[1]))/(np.sqrt(2)))**(nvec[1])  
-            Cb3 = ((bet[6]*np.sqrt(etav[6]) + bet[7]*np.sqrt(etav[7]))/(np.sqrt(2)))**(nvec[6]) 
-            Cb4 = ((bet[6]*np.sqrt(etav[6]) - bet[7]*np.sqrt(etav[7]))/(np.sqrt(2)))**(nvec[7]) 
-            Cb = Cb1*Cb2*Cb3*Cb4 
+            Cb1 = ((bet[0]*np.sqrt(etav[0]) - bet[1]*np.sqrt(etav[1]))/(np.sqrt(2)))**(nvec[0])
+            Cb2 = ((bet[0]*np.sqrt(etav[0]) + bet[1]*np.sqrt(etav[1]))/(np.sqrt(2)))**(nvec[1])
+            Cb3 = ((bet[6]*np.sqrt(etav[6]) + bet[7]*np.sqrt(etav[7]))/(np.sqrt(2)))**(nvec[6])
+            Cb4 = ((bet[6]*np.sqrt(etav[6]) - bet[7]*np.sqrt(etav[7]))/(np.sqrt(2)))**(nvec[7])
+            Cb = Cb1*Cb2*Cb3*Cb4
         elif dmj == 2:
-            Cb1 = ((bet[0]*np.sqrt(etav[0]) + bet[1]*np.sqrt(etav[1]))/(np.sqrt(2)))**(nvec[0]) 
-            Cb2 = ((bet[0]*np.sqrt(etav[0]) - bet[1]*np.sqrt(etav[1]))/(np.sqrt(2)))**(nvec[1])  
-            Cb3 = ((bet[6]*np.sqrt(etav[6]) - bet[7]*np.sqrt(etav[7]))/(np.sqrt(2)))**(nvec[6]) 
-            Cb4 = ((bet[6]*np.sqrt(etav[6]) + bet[7]*np.sqrt(etav[7]))/(np.sqrt(2)))**(nvec[7]) 
-            Cb = Cb1*Cb2*Cb3*Cb4 
+            Cb1 = ((bet[0]*np.sqrt(etav[0]) + bet[1]*np.sqrt(etav[1]))/(np.sqrt(2)))**(nvec[0])
+            Cb2 = ((bet[0]*np.sqrt(etav[0]) - bet[1]*np.sqrt(etav[1]))/(np.sqrt(2)))**(nvec[1])
+            Cb3 = ((bet[6]*np.sqrt(etav[6]) - bet[7]*np.sqrt(etav[7]))/(np.sqrt(2)))**(nvec[6])
+            Cb4 = ((bet[6]*np.sqrt(etav[6]) + bet[7]*np.sqrt(etav[7]))/(np.sqrt(2)))**(nvec[7])
+            Cb = Cb1*Cb2*Cb3*Cb4
         elif dmj == 3:
-            Cb1 = ((bet[0]*np.sqrt(etav[0]) + bet[1]*np.sqrt(etav[1]))/(np.sqrt(2)))**(nvec[0]) 
-            Cb2 = ((bet[0]*np.sqrt(etav[0]) - bet[1]*np.sqrt(etav[1]))/(np.sqrt(2)))**(nvec[1])  
-            Cb3 = ((bet[6]*np.sqrt(etav[6]) + bet[7]*np.sqrt(etav[7]))/(np.sqrt(2)))**(nvec[6]) 
-            Cb4 = ((bet[6]*np.sqrt(etav[6]) - bet[7]*np.sqrt(etav[7]))/(np.sqrt(2)))**(nvec[7]) 
-            Cb = Cb1*Cb2*Cb3*Cb4 
+            Cb1 = ((bet[0]*np.sqrt(etav[0]) + bet[1]*np.sqrt(etav[1]))/(np.sqrt(2)))**(nvec[0])
+            Cb2 = ((bet[0]*np.sqrt(etav[0]) - bet[1]*np.sqrt(etav[1]))/(np.sqrt(2)))**(nvec[1])
+            Cb3 = ((bet[6]*np.sqrt(etav[6]) + bet[7]*np.sqrt(etav[7]))/(np.sqrt(2)))**(nvec[6])
+            Cb4 = ((bet[6]*np.sqrt(etav[6]) - bet[7]*np.sqrt(etav[7]))/(np.sqrt(2)))**(nvec[7])
+            Cb = Cb1*Cb2*Cb3*Cb4
         else:
             Cb = 1
 
@@ -2332,32 +2425,32 @@ class ZALM:
         # for term in Cv:
         #     # Extract the numeric coefficient from the term
         #     coef, symbolic_part = term.as_coeff_mul()
-            
+
         #     # Process symbolic factors and combine all numeric elements
         #     numeric_coef = coef
         #     symbolic_factors = []
-            
+
         #     for factor in symbolic_part:
         #         if factor.is_number or factor == sp.I or factor == -sp.I:
         #             numeric_coef *= factor
         #         else:
         #             symbolic_factors.append(factor)
-            
+
         #     # Expand powers in symbolic factors
         #     expanded_symbols = tools.expand_powers_to_symbols(symbolic_factors)
-            
+
         #     # Create tuple with numeric coefficient first
         #     result_tuple = (numeric_coef,) + tuple(expanded_symbols)
         #     result.append(result_tuple)
 
             # Convert polynomial expression to regular expression and expand
         C_expanded = expand(C)
-        
+
         # Process terms to create the structured tuples
         result = []
         for term in C_expanded.as_ordered_terms():
             coef, rest = term.as_coeff_mul()
-            
+
             # Collect all numeric factors into coefficient
             symbolic_factors = []
             for factor in rest:
@@ -2365,7 +2458,7 @@ class ZALM:
                     coef *= factor
                 else:
                     symbolic_factors.append(factor)
-            
+
             # Expand powers
             expanded_symbols = []
             for factor in symbolic_factors:
@@ -2373,7 +2466,7 @@ class ZALM:
                     expanded_symbols.extend([factor.base] * int(factor.exp))
                 else:
                     expanded_symbols.append(factor)
-            
+
             # Create result tuple with numeric coefficient first
             result_tuple = (coef,) + tuple(expanded_symbols)
             result.append(result_tuple)
@@ -2417,56 +2510,56 @@ class ZALM:
         etav = np.array([eta_t*eta_d, eta_t*eta_d, eta_b, eta_b, eta_b, eta_b, eta_t*eta_d, eta_t*eta_d])
 
         if dmi == 0:
-            Ca1 = ((alp[0]*np.sqrt(etav[0]) - alp[1]*np.sqrt(etav[1]))/(np.sqrt(2)))**(nvec[0]) 
-            Ca2 = ((alp[0]*np.sqrt(etav[0]) + alp[1]*np.sqrt(etav[1]))/(np.sqrt(2)))**(nvec[1])  
-            Ca3 = ((alp[6]*np.sqrt(etav[6]) - alp[7]*np.sqrt(etav[7]))/(np.sqrt(2)))**(nvec[6]) 
-            Ca4 = ((alp[6]*np.sqrt(etav[6]) + alp[7]*np.sqrt(etav[7]))/(np.sqrt(2)))**(nvec[7]) 
-            Ca = Ca1*Ca2*Ca3*Ca4 
+            Ca1 = ((alp[0]*np.sqrt(etav[0]) - alp[1]*np.sqrt(etav[1]))/(np.sqrt(2)))**(nvec[0])
+            Ca2 = ((alp[0]*np.sqrt(etav[0]) + alp[1]*np.sqrt(etav[1]))/(np.sqrt(2)))**(nvec[1])
+            Ca3 = ((alp[6]*np.sqrt(etav[6]) - alp[7]*np.sqrt(etav[7]))/(np.sqrt(2)))**(nvec[6])
+            Ca4 = ((alp[6]*np.sqrt(etav[6]) + alp[7]*np.sqrt(etav[7]))/(np.sqrt(2)))**(nvec[7])
+            Ca = Ca1*Ca2*Ca3*Ca4
         elif dmi == 1:
-            Ca1 = ((alp[0]*np.sqrt(etav[0]) - alp[1]*np.sqrt(etav[1]))/(np.sqrt(2)))**(nvec[0]) 
-            Ca2 = ((alp[0]*np.sqrt(etav[0]) + alp[1]*np.sqrt(etav[1]))/(np.sqrt(2)))**(nvec[1])  
-            Ca3 = ((alp[6]*np.sqrt(etav[6]) + alp[7]*np.sqrt(etav[7]))/(np.sqrt(2)))**(nvec[6]) 
-            Ca4 = ((alp[6]*np.sqrt(etav[6]) - alp[7]*np.sqrt(etav[7]))/(np.sqrt(2)))**(nvec[7]) 
-            Ca = Ca1*Ca2*Ca3*Ca4 
+            Ca1 = ((alp[0]*np.sqrt(etav[0]) - alp[1]*np.sqrt(etav[1]))/(np.sqrt(2)))**(nvec[0])
+            Ca2 = ((alp[0]*np.sqrt(etav[0]) + alp[1]*np.sqrt(etav[1]))/(np.sqrt(2)))**(nvec[1])
+            Ca3 = ((alp[6]*np.sqrt(etav[6]) + alp[7]*np.sqrt(etav[7]))/(np.sqrt(2)))**(nvec[6])
+            Ca4 = ((alp[6]*np.sqrt(etav[6]) - alp[7]*np.sqrt(etav[7]))/(np.sqrt(2)))**(nvec[7])
+            Ca = Ca1*Ca2*Ca3*Ca4
         elif dmi == 2:
-            Ca1 = ((alp[0]*np.sqrt(etav[0]) + alp[1]*np.sqrt(etav[1]))/(np.sqrt(2)))**(nvec[0]) 
-            Ca2 = ((alp[0]*np.sqrt(etav[0]) - alp[1]*np.sqrt(etav[1]))/(np.sqrt(2)))**(nvec[1])  
-            Ca3 = ((alp[6]*np.sqrt(etav[6]) - alp[7]*np.sqrt(etav[7]))/(np.sqrt(2)))**(nvec[6]) 
-            Ca4 = ((alp[6]*np.sqrt(etav[6]) + alp[7]*np.sqrt(etav[7]))/(np.sqrt(2)))**(nvec[7]) 
-            Ca = Ca1*Ca2*Ca3*Ca4 
+            Ca1 = ((alp[0]*np.sqrt(etav[0]) + alp[1]*np.sqrt(etav[1]))/(np.sqrt(2)))**(nvec[0])
+            Ca2 = ((alp[0]*np.sqrt(etav[0]) - alp[1]*np.sqrt(etav[1]))/(np.sqrt(2)))**(nvec[1])
+            Ca3 = ((alp[6]*np.sqrt(etav[6]) - alp[7]*np.sqrt(etav[7]))/(np.sqrt(2)))**(nvec[6])
+            Ca4 = ((alp[6]*np.sqrt(etav[6]) + alp[7]*np.sqrt(etav[7]))/(np.sqrt(2)))**(nvec[7])
+            Ca = Ca1*Ca2*Ca3*Ca4
         elif dmi == 3:
-            Ca1 = ((alp[0]*np.sqrt(etav[0]) + alp[1]*np.sqrt(etav[1]))/(np.sqrt(2)))**(nvec[0]) 
-            Ca2 = ((alp[0]*np.sqrt(etav[0]) - alp[1]*np.sqrt(etav[1]))/(np.sqrt(2)))**(nvec[1])  
-            Ca3 = ((alp[6]*np.sqrt(etav[6]) + alp[7]*np.sqrt(etav[7]))/(np.sqrt(2)))**(nvec[6]) 
-            Ca4 = ((alp[6]*np.sqrt(etav[6]) - alp[7]*np.sqrt(etav[7]))/(np.sqrt(2)))**(nvec[7]) 
-            Ca = Ca1*Ca2*Ca3*Ca4 
+            Ca1 = ((alp[0]*np.sqrt(etav[0]) + alp[1]*np.sqrt(etav[1]))/(np.sqrt(2)))**(nvec[0])
+            Ca2 = ((alp[0]*np.sqrt(etav[0]) - alp[1]*np.sqrt(etav[1]))/(np.sqrt(2)))**(nvec[1])
+            Ca3 = ((alp[6]*np.sqrt(etav[6]) + alp[7]*np.sqrt(etav[7]))/(np.sqrt(2)))**(nvec[6])
+            Ca4 = ((alp[6]*np.sqrt(etav[6]) - alp[7]*np.sqrt(etav[7]))/(np.sqrt(2)))**(nvec[7])
+            Ca = Ca1*Ca2*Ca3*Ca4
         else:
             Ca = 1
 
         if dmj == 0:
-            Cb1 = ((bet[0]*np.sqrt(etav[0]) - bet[1]*np.sqrt(etav[1]))/(np.sqrt(2)))**(nvec[0]) 
-            Cb2 = ((bet[0]*np.sqrt(etav[0]) + bet[1]*np.sqrt(etav[1]))/(np.sqrt(2)))**(nvec[1])  
-            Cb3 = ((bet[6]*np.sqrt(etav[6]) - bet[7]*np.sqrt(etav[7]))/(np.sqrt(2)))**(nvec[6]) 
-            Cb4 = ((bet[6]*np.sqrt(etav[6]) + bet[7]*np.sqrt(etav[7]))/(np.sqrt(2)))**(nvec[7]) 
-            Cb = Cb1*Cb2*Cb3*Cb4 
+            Cb1 = ((bet[0]*np.sqrt(etav[0]) - bet[1]*np.sqrt(etav[1]))/(np.sqrt(2)))**(nvec[0])
+            Cb2 = ((bet[0]*np.sqrt(etav[0]) + bet[1]*np.sqrt(etav[1]))/(np.sqrt(2)))**(nvec[1])
+            Cb3 = ((bet[6]*np.sqrt(etav[6]) - bet[7]*np.sqrt(etav[7]))/(np.sqrt(2)))**(nvec[6])
+            Cb4 = ((bet[6]*np.sqrt(etav[6]) + bet[7]*np.sqrt(etav[7]))/(np.sqrt(2)))**(nvec[7])
+            Cb = Cb1*Cb2*Cb3*Cb4
         elif dmj == 1:
-            Cb1 = ((bet[0]*np.sqrt(etav[0]) - bet[1]*np.sqrt(etav[1]))/(np.sqrt(2)))**(nvec[0]) 
-            Cb2 = ((bet[0]*np.sqrt(etav[0]) + bet[1]*np.sqrt(etav[1]))/(np.sqrt(2)))**(nvec[1])  
-            Cb3 = ((bet[6]*np.sqrt(etav[6]) + bet[7]*np.sqrt(etav[7]))/(np.sqrt(2)))**(nvec[6]) 
-            Cb4 = ((bet[6]*np.sqrt(etav[6]) - bet[7]*np.sqrt(etav[7]))/(np.sqrt(2)))**(nvec[7]) 
-            Cb = Cb1*Cb2*Cb3*Cb4 
+            Cb1 = ((bet[0]*np.sqrt(etav[0]) - bet[1]*np.sqrt(etav[1]))/(np.sqrt(2)))**(nvec[0])
+            Cb2 = ((bet[0]*np.sqrt(etav[0]) + bet[1]*np.sqrt(etav[1]))/(np.sqrt(2)))**(nvec[1])
+            Cb3 = ((bet[6]*np.sqrt(etav[6]) + bet[7]*np.sqrt(etav[7]))/(np.sqrt(2)))**(nvec[6])
+            Cb4 = ((bet[6]*np.sqrt(etav[6]) - bet[7]*np.sqrt(etav[7]))/(np.sqrt(2)))**(nvec[7])
+            Cb = Cb1*Cb2*Cb3*Cb4
         elif dmj == 2:
-            Cb1 = ((bet[0]*np.sqrt(etav[0]) + bet[1]*np.sqrt(etav[1]))/(np.sqrt(2)))**(nvec[0]) 
-            Cb2 = ((bet[0]*np.sqrt(etav[0]) - bet[1]*np.sqrt(etav[1]))/(np.sqrt(2)))**(nvec[1])  
-            Cb3 = ((bet[6]*np.sqrt(etav[6]) - bet[7]*np.sqrt(etav[7]))/(np.sqrt(2)))**(nvec[6]) 
-            Cb4 = ((bet[6]*np.sqrt(etav[6]) + bet[7]*np.sqrt(etav[7]))/(np.sqrt(2)))**(nvec[7]) 
-            Cb = Cb1*Cb2*Cb3*Cb4 
+            Cb1 = ((bet[0]*np.sqrt(etav[0]) + bet[1]*np.sqrt(etav[1]))/(np.sqrt(2)))**(nvec[0])
+            Cb2 = ((bet[0]*np.sqrt(etav[0]) - bet[1]*np.sqrt(etav[1]))/(np.sqrt(2)))**(nvec[1])
+            Cb3 = ((bet[6]*np.sqrt(etav[6]) - bet[7]*np.sqrt(etav[7]))/(np.sqrt(2)))**(nvec[6])
+            Cb4 = ((bet[6]*np.sqrt(etav[6]) + bet[7]*np.sqrt(etav[7]))/(np.sqrt(2)))**(nvec[7])
+            Cb = Cb1*Cb2*Cb3*Cb4
         elif dmj == 3:
-            Cb1 = ((bet[0]*np.sqrt(etav[0]) + bet[1]*np.sqrt(etav[1]))/(np.sqrt(2)))**(nvec[0]) 
-            Cb2 = ((bet[0]*np.sqrt(etav[0]) - bet[1]*np.sqrt(etav[1]))/(np.sqrt(2)))**(nvec[1])  
-            Cb3 = ((bet[6]*np.sqrt(etav[6]) + bet[7]*np.sqrt(etav[7]))/(np.sqrt(2)))**(nvec[6]) 
-            Cb4 = ((bet[6]*np.sqrt(etav[6]) - bet[7]*np.sqrt(etav[7]))/(np.sqrt(2)))**(nvec[7]) 
-            Cb = Cb1*Cb2*Cb3*Cb4 
+            Cb1 = ((bet[0]*np.sqrt(etav[0]) + bet[1]*np.sqrt(etav[1]))/(np.sqrt(2)))**(nvec[0])
+            Cb2 = ((bet[0]*np.sqrt(etav[0]) - bet[1]*np.sqrt(etav[1]))/(np.sqrt(2)))**(nvec[1])
+            Cb3 = ((bet[6]*np.sqrt(etav[6]) + bet[7]*np.sqrt(etav[7]))/(np.sqrt(2)))**(nvec[6])
+            Cb4 = ((bet[6]*np.sqrt(etav[6]) - bet[7]*np.sqrt(etav[7]))/(np.sqrt(2)))**(nvec[7])
+            Cb = Cb1*Cb2*Cb3*Cb4
         else:
             Cb = 1
 
@@ -2482,12 +2575,12 @@ class ZALM:
         # ms = ZALM.mcomb(2)
 
         # # Presently, this only works for the 2 schmidt coefficient case
-        # Ca = alp[2]*alp[3]*(alp[0] - ((-1)**(ms[dmi][0]))*alp[1])*(alp[6] - ((-1)**(ms[dmi][1]))*alp[7]) 
+        # Ca = alp[2]*alp[3]*(alp[0] - ((-1)**(ms[dmi][0]))*alp[1])*(alp[6] - ((-1)**(ms[dmi][1]))*alp[7])
         # Cb = bet[2]*bet[3]*(bet[0] - ((-1)**(ms[dmj][0]))*bet[1])*(bet[6] - ((-1)**(ms[dmj][1]))*bet[7])
         # C = Ca*Cb
 
         # Seperating the coefficients in a way that can be used by the Wick coupling function
-        
+
         C = sp.expand(C)
         Cv = C.as_ordered_terms()
 
@@ -2701,8 +2794,15 @@ class ZALM:
             a = tools.wick_coupling_mat(i,xb)
             elm += tools.wick_out(a, Anv)
         return elm
-    
-    
+
+    @staticmethod
+    def dmatval_do_not_store_looping_pattern(Cni, Anv, xb):
+        elm = 0.0
+        bv_index_map = {element: idx for idx, element in enumerate(xb)}
+        for i in Cni:
+            elm += tools.wick_out_do_not_store_looping_pattern(i,bv_index_map,Anv)
+        return elm
+
     """
     Functions for analysis purposes
     """
@@ -2712,7 +2812,7 @@ class ZALM:
         Calculates the probability of generation for a range of mean photon numbers
         """
         Pgenv = np.array([])
-        
+
         zex = ZALM()
 
         zex.params["bsm_efficiency"] = etab
@@ -2749,7 +2849,7 @@ class ZALM:
         #mu = np.array([10**(-4), 10**(-2), 0.5])
         eta_b = np.linspace(0,3,15)
         eta_t = np.linspace(0,10,15)
-        
+
         # Create the meshgrid for the eta values
         EB, ET = np.meshgrid(eta_b, eta_t)
 
@@ -2758,7 +2858,7 @@ class ZALM:
 
         # Compute the values of Pef_depol for each combination of a, EPS, and L
         Z = pgen_vectorized(10**(-ET/10), 1, 10**(-EB/10), mu)
-        
+
         return [EB, ET, Z]
 
     @staticmethod
@@ -2766,7 +2866,7 @@ class ZALM:
         """
         Calculate the fidelity for a range of mean photon numbers
         """
-        
+
         Fidl3 = np.array([])
         muv = np.linspace(muv1, muv2, muvs) #np.array([10**(-4), 0.001, 0.01, 0.05, 0.1, 0.2])
 
@@ -2780,7 +2880,7 @@ class ZALM:
             zalm_fid_loss_3.calculate_fidelity_full()
             Fidl3 = np.append(Fidl3, zalm_fid_loss_3.results["fidelity"])
         return [muv, 4*Fidl3] # The 4 comes from the fact that the pgen in the numerator is off by a factor of 4
-    
+
     @staticmethod
     def fidelity_value(etat, etad, etab, muv):
         """
@@ -2793,9 +2893,9 @@ class ZALM:
         zalm_fid.params["mean_photon"] = muv
         zalm_fid.run()
         zalm_fid.calculate_fidelity_full()
-        
-        return zalm_fid.results["fidelity"] 
-    
+
+        return zalm_fid.results["fidelity"]
+
     @staticmethod
     def eta_fid_3d(mu):
         """
@@ -2807,7 +2907,7 @@ class ZALM:
         #mu = np.array([10**(-4), 10**(-2), 0.5])
         eta_b = np.linspace(0,3,10)
         eta_t = np.linspace(0,10,10)
-        
+
         # Create the meshgrid for the eta values
         EB, ET = np.meshgrid(eta_b, eta_t)
 
@@ -2816,10 +2916,10 @@ class ZALM:
 
         # Compute the values of Pef_depol for each combination of a, EPS, and L
         Z = fid_vectorized(10**(-ET/10), 1, 10**(-EB/10), mu)
-        
+
         return [EB, ET, Z]
 
-    
+
     """
     Schmidt Analysis Function
     """
@@ -2828,7 +2928,7 @@ class ZALM:
         """
         Solve for the squeezing parameter xi given a mean photon number value
         """
-        
+
         # Define the equation to solve
         def equation(xi, ns):
             return np.sinh(np.abs(xi))**2 - ns
@@ -2840,13 +2940,13 @@ class ZALM:
         xi_solution = fsolve(equation, initial_guess, args=(ns))
 
         return xi_solution
-    
+
     @staticmethod
     def Ns_Schmidt(ns, lam_n):
         """
         For a given mean photon number value, calculate the resulting mean photon number for for a Schmidt value
         """
-        
+
         xi_s = ZALM.solve_squeezing_parameter(ns)
         Ns_m = np.sinh(np.abs(np.sqrt(lam_n)*xi_s))**2
         return Ns_m[0]
