@@ -355,7 +355,7 @@ class tools:
 
         elm = 0
         for i in Cni: # Can change Cni to tqdm(Cni) to get a progress bar
-            a = tools.wick_coupling_mat(i, xb)
+            a = tools.wick_coupling_mat_list(i, xb)
             elm += tools.wick_out(a, Anv)
         return elm
 
