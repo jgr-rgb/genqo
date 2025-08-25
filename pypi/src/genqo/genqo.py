@@ -28,7 +28,23 @@ TYP_PARAMS = {
     "visibility": 1,
 }
 
-_cache_wick_pairings = []
+
+def _wick_partitions(n):
+    all_partitions = []
+    indices = list(range(n))
+    for partition in itertools.combinations(itertools.combinations(indices, 2), n//2):
+        # Check if every index appears exactly once
+        flat_partition = [idx for pair in partition for idx in pair]
+        if len(set(flat_partition)) == n:
+            all_partitions.append(partition)
+    return all_partitions
+
+cache_wick_partitions = {
+    2: _wick_partitions(2),
+    4: _wick_partitions(4),
+    6: _wick_partitions(6),
+    8: _wick_partitions(8),
+}
 
 class tools:
 
@@ -226,7 +242,6 @@ class tools:
             input.append(bv_index_map[l])  # O(1) lookup instead of O(n) .index()
 
         test = tools.wick_pairings(input)
-        _cache_wick_pairings.append((input, test))
 
         return (test,coef)  # The final array that contains all combinations which are valid for Wick coupling in terms of their location in the matrix, as well as the coeficient by which the result needs to be multiplied
 
@@ -287,6 +302,41 @@ class tools:
             s += si
             j += 1
         return s*ar[1]
+
+    @staticmethod
+    def wick_out_do_not_store_looping_pattern(Cni_instance, bv_index_map, Anv):
+        """
+        Input:
+        - ar: tuple (The basis vector array, the coefficient)
+        - Anv: The inverse of the A matrix
+        Output:
+        - A calculation of the wick element for each coupling
+        """
+        # TODO soon: use numba
+        #####
+        #test, coeff = tools.wick_coupling_mat(Cni_instance, xb)
+        #####
+        coef = Cni_instance[0]
+        input1a = Cni_instance[1:]
+
+        # Relate the phase coordinates to the basis vector using the map
+        moment_vector = []
+        for l in input1a:
+            moment_vector.append(bv_index_map[l])  # O(1) lookup instead of O(n) .index()
+
+        #####
+        #element_pairings = tools.wick_pairings(moment_vector)
+        #####
+        # Get all ways to partition the indices into pairs
+        coeff_sum = 0.0
+        for partition in cache_wick_partitions[len(moment_vector)]:
+            # Convert index pairings to element pairings
+            sum_factor = 1.0
+            for i, j in partition:
+                sum_factor *= Anv[(moment_vector[i], moment_vector[j])]
+            coeff_sum += sum_factor
+
+        return coeff_sum*coef
 
     @staticmethod
     def W(Cni, Amat, xb):
@@ -2092,6 +2142,33 @@ class ZALM:
         # Define the matrix element
         Cn = ZALM.moment_vector_with_memory(lamvec, dmi, dmj, nvec, eta_t, eta_d, eta_b)
 
+        return ZALM.dmatval_do_not_store_looping_pattern(Cn, nAinv, x)
+
+    @staticmethod
+    def dmijZ_old(lamvec, dmi, dmj, nAinv, nvec, eta_t, eta_d, eta_b):
+        """
+        Arguments:
+        - nAinv: The numerical inverse of the A matrix
+        - lamvec: The vectors of lambdas for the system
+        - dmi: The row number for the cooresponding density matrix element
+        - dmj: The collumn number for the cooresponding density matrix element
+        - nvec: The vector of n_i's for the system, where n_i is the number of photons in mode i
+        - eta_t: The transmission efficiency
+        - eta_d: The detection efficiency
+        - eta_b: The Bell state measurement efficiency
+        Output:
+        - The density matrix element for the ZALM source
+        """
+
+        mds = 8*len(lamvec) # Number of modes for our system
+
+        # First, define our basis vector which cooresponds to the A matrix
+        x = ZALM.basisvZ(mds)
+
+        # Define the matrix element
+        Cn = ZALM.moment_vector_with_memory(lamvec, dmi, dmj, nvec, eta_t, eta_d, eta_b)
+
+        #return ZALM.dmatval(Cn, nAinv, x)
         return ZALM.dmatval(Cn, nAinv, x)
 
     def moment_vector_with_memory_poly(lambda_vector, dmi, dmj, nvec, eta_t, eta_d, eta_b):
@@ -2711,6 +2788,13 @@ class ZALM:
             elm += tools.wick_out(a, Anv)
         return elm
 
+    @staticmethod
+    def dmatval_do_not_store_looping_pattern(Cni, Anv, xb):
+        elm = 0.0
+        bv_index_map = {element: idx for idx, element in enumerate(xb)}
+        for i in Cni:
+            elm += tools.wick_out_do_not_store_looping_pattern(i,bv_index_map,Anv)
+        return elm
 
     """
     Functions for analysis purposes
