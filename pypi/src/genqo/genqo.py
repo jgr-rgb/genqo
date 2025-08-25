@@ -16,6 +16,7 @@ import copy
 from joblib import Parallel, delayed
 from sympy.polys import Poly, PolynomialRing
 from sympy import symbols, I, expand, QQ
+from numba import njit
 
 
 TYP_PARAMS = {
@@ -37,7 +38,7 @@ def _wick_partitions(n):
         flat_partition = [idx for pair in partition for idx in pair]
         if len(set(flat_partition)) == n:
             all_partitions.append(partition)
-    return all_partitions
+    return np.array(all_partitions)
 
 cache_wick_partitions = {
     2: _wick_partitions(2),
@@ -45,6 +46,18 @@ cache_wick_partitions = {
     6: _wick_partitions(6),
     8: _wick_partitions(8),
 }
+
+@njit(fastmath=True)
+def wick_out_do_not_store_looping_pattern_numba_kernel(moment_vector, Anv, partitions):
+    coeff_sum = 0.0
+    for partition in partitions:
+        # Convert index pairings to element pairings
+        sum_factor = 1.0
+        for i, j in partition:
+            sum_factor *= Anv[moment_vector[i], moment_vector[j]]
+        coeff_sum += sum_factor
+    return coeff_sum
+
 
 class tools:
 
@@ -320,21 +333,15 @@ class tools:
         input1a = Cni_instance[1:]
 
         # Relate the phase coordinates to the basis vector using the map
-        moment_vector = []
-        for l in input1a:
-            moment_vector.append(bv_index_map[l])  # O(1) lookup instead of O(n) .index()
+        moment_vector = np.empty(len(input1a), dtype=int)
+        for i, l in enumerate(input1a):
+            moment_vector[i] = bv_index_map[l]
 
         #####
         #element_pairings = tools.wick_pairings(moment_vector)
         #####
         # Get all ways to partition the indices into pairs
-        coeff_sum = 0.0
-        for partition in cache_wick_partitions[len(moment_vector)]:
-            # Convert index pairings to element pairings
-            sum_factor = 1.0
-            for i, j in partition:
-                sum_factor *= Anv[(moment_vector[i], moment_vector[j])]
-            coeff_sum += sum_factor
+        coeff_sum = wick_out_do_not_store_looping_pattern_numba_kernel(moment_vector, Anv, cache_wick_partitions[len(moment_vector)])
 
         return coeff_sum*coef
 
