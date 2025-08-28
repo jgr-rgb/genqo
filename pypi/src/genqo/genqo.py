@@ -2143,11 +2143,17 @@ class ZALM:
         nA = self.results["k_function_matrix"] + self.results["loss_bsm_matrix"]
         nAnv = np.linalg.inv(nA)
 
+        Gam = self.results["Gamma"]
+        D1 = np.sqrt(np.linalg.det(nA))
+        D2 = (np.linalg.det(Gam))**(0.25)
+        D3 = (np.linalg.det(np.conjugate(Gam)))**(0.25)
+        Coef = (1)/(D1 * D2 * D3)
+
         for i in range(lmat):
             for j in range(lmat):
                 mat[i, j] = ZALM.dmijZ([1], i, j, nAnv, nvec, self.params["outcoupling_efficiency"], self.params["detection_efficiency"], self.params["bsm_efficiency"])
 
-        self.results["output_state"] = mat # This is the unnormalized density matrix
+        self.results["output_state"] = Coef*mat # This is the unnormalized density matrix
 
     @staticmethod
     def dmijZ(lamvec, dmi, dmj, nAinv, nvec, eta_t, eta_d, eta_b):
@@ -2827,6 +2833,8 @@ class ZALM:
         for i in Cni:
             elm += tools.wick_out_do_not_store_looping_pattern(i,bv_index_map,Anv)
         return elm
+
+    @staticmethod
     def dmatval_do_not_store_looping_pattern_do_not_use_symbols(Cni, Anv, xb):
         elm = 0.0
         for i in Cni:
