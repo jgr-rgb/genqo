@@ -796,7 +796,7 @@ class SPDC:
     def __init__(self, param=TYP_PARAMS):
 
         self.params = param
-
+        self.basisv = ZALM.basisvZ(4)  # Because we have 4 modes in the SPDC state
         self.status = 0
         self.results = {
             "covariance_matrix": None,
@@ -924,11 +924,6 @@ class SPDC:
         Calculates the probability of success, which is the probability of generating a photon-photon state with the given parameters
         """
 
-        mds = 4  # Number of modes for our system
-
-        # First, define our basis vector
-        x = ZALM.basisvZ(mds)  # Because we corrected the basis vector of our covariance matrix, we need to use a different basis vector for the Wick coupling
-
         # The loss matrix will be unique for calculating the probability of generation
         self.calculate_loss_bsm_matrix_trace()
         self.calculate_k_function_matrix()
@@ -945,17 +940,12 @@ class SPDC:
 
         C = 1
 
-        self.results["probability_success"] = Coef #Coef*tools.W(C,nA,x) #4 * Coef * val(ZALM.moment_vector(self.params["schmidt_coeffs"], 0), nAinv, x)
+        self.results["probability_success"] = Coef #Coef*tools.W(C,nA,self.basisv) #4 * Coef * val(ZALM.moment_vector(self.params["schmidt_coeffs"], 0), nAinv, x)
 
     def calculate_fidelity(self):
         """
         Calculates the fidelity of the photon-photon state with respect to the Bell state
         """
-
-        mds = 4  # Number of modes for our system
-
-        # First, define our basis vector
-        x = ZALM.basisvZ(mds)  # Because we corrected the basis vector of our covariance matrix, we need to use a different basis vector for the Wick coupling
 
         # Define the matrix element
         Cn1 = SPDC.moment_vector([1], 1)
@@ -970,10 +960,10 @@ class SPDC:
         nA1 = self.results["k_function_matrix"] + self.results["loss_bsm_matrix"]
         Gam = self.results["Gamma"]
 
-        F1 = tools.W(Cn1, nA1, x)
-        F2 = tools.W(Cn2, nA1, x)
-        F3 = tools.W(Cn3, nA1, x)
-        F4 = tools.W(Cn4, nA1, x)
+        F1 = tools.W(Cn1, nA1, self.basisv)
+        F2 = tools.W(Cn2, nA1, self.basisv)
+        F3 = tools.W(Cn3, nA1, self.basisv)
+        F4 = tools.W(Cn4, nA1, self.basisv)
 
         N1 = ((self.params["detection_efficiency"]**2)*(self.params["outcoupling_efficiency"]**2))**2
         D1 = np.sqrt(np.linalg.det(nA1))
@@ -1000,7 +990,7 @@ class SPDC:
         nAnv = np.linalg.inv(mA)
 
         # The loss matrix will be unique for calculating the probability of generation
-        self.calculate_loss_bsm_matrix_fid()
+        self.calculate_loss_matrix_fid()
         self.calculate_k_function_matrix()
 
         nA = (self.results["k_function_matrix"] + self.results["loss_bsm_matrix"])
@@ -1016,7 +1006,7 @@ class SPDC:
         D3 = (np.linalg.det(np.conjugate(Gam)))**(0.25)
         Coef = (N1)/(D1 * D2 * D3)
 
-        return  Coef*ZALM.dmijpp([1], nAnv, nv1, nv2) # This is the unnormalized density matrix element for the photon-photon density matrix
+        return  Coef*ZALM.dmijpp(nAnv, nv1, nv2) # This is the unnormalized density matrix element for the photon-photon density matrix
 
     """
     Functions for calculating the spin-spin state
@@ -1043,7 +1033,7 @@ class SPDC:
 
         for i in range(lmat):
             for j in range(lmat):
-                mat[i, j] = SPDC.dmijZ(i, j, nAnv, nvec, self.params["outcoupling_efficiency"], self.params["detection_efficiency"])
+                mat[i, j] = SPDC.dmijZ(self, i, j, nAnv, nvec, self.params["outcoupling_efficiency"], self.params["detection_efficiency"])
 
         Gam = self.results["Gamma"]
         D1 = np.sqrt(np.linalg.det(nA))
@@ -1054,11 +1044,154 @@ class SPDC:
 
         self.results["output_state"] = Coef*mat # This is the unnormalized density matrix
 
-    def calculate_fidelity_spin_spin(self):
-        mds = 4  # Number of modes for our system
 
-        # First, define our basis vector
-        x = ZALM.basisvZ(mds)  # Because we corrected the basis vector of our covariance matrix, we need to use a different basis vector for the Wick coupling
+    @staticmethod
+    def dmijZ(self, dmi, dmj, nAinv, nvec, eta_t, eta_d):
+        """
+        Arguments:
+        - nAinv: The numerical inverse of the A matrix
+        - lamvec: The vectors of lambdas for the system
+        - dmi: The row number for the cooresponding density matrix element
+        - dmj: The collumn number for the cooresponding density matrix element
+        - nvec: The vector of n_i's for the system, where n_i is the number of photons in mode i
+        - eta_t: The transmission efficiency
+        - eta_d: The detection efficiency
+        - eta_b: The Bell state measurement efficiency
+        Output:
+        - The density matrix element for the ZALM source
+        """
+
+        # Define the matrix element
+        #Cn = ZALM.moment_vector_with_memory(lamvec, dmi, dmj, nvec, eta_t, eta_d, eta_b)
+        #return ZALM.dmatval_do_not_store_looping_pattern(Cn, nAinv, x)
+        Cn = SPDC.moment_vector_with_memory_do_not_convert_to_symbols(dmi, dmj, nvec, eta_t, eta_d)
+        return SPDC.dmatval_do_not_store_looping_pattern_do_not_use_symbols(Cn, nAinv, self.basisv)
+
+    @staticmethod
+    def moment_vector_with_memory_do_not_convert_to_symbols(dmi, dmj, nvec, eta_t, eta_d):
+        """
+        Arguments
+        - lambda_vector: The vector of lambda_i's
+        - dmi: The row corresponding to the density matrix element of interest
+        - dmj: The column corresponding to the density matrix element of interest
+        - nvec: The vector of n_i's for the system, where n_i is the number of photons in mode i
+        - eta_t: The transmission efficiency
+        - eta_d: The detection efficiency
+        - eta_b: The Bell state measurement efficiency
+        """
+        C, all_qps = SPDC.moment_vector_with_memory_poly(dmi, dmj, nvec, eta_t, eta_d)
+        # assert not any((2 in k) for k in v.as_dict().keys()) # making sure that no powers of 2 are present
+        result = [(c,[i for (i,g) in enumerate(gens) if g == 1]) for (gens,c) in C.as_dict().items()]
+
+        return result
+
+    @staticmethod
+    def moment_vector_with_memory_poly(dmi, dmj, nvec, eta_t, eta_d):
+        """
+        Arguments
+        - lambda_vector: The vector of lambda_i's
+        - dmi: The row corresponding to the density matrix element of interest
+        - dmj: The column corresponding to the density matrix element of interest
+        - nvec: The vector of n_i's for the system, where n_i is the number of photons in mode i
+        - eta_t: The transmission efficiency
+        - eta_d: The detection efficiency
+        - eta_b: The Bell state measurement efficiency
+        """
+        mds = 4 # Number of modes for our system
+
+        # For the number of modes desired, create a vector of (q/p)_{\alphas / \beta}'s
+        _qai = [sp.Symbol("qa{}".format(i)) for i in range(1, mds + 1)]
+        _pai = [sp.Symbol("pa{}".format(i)) for i in range(1, mds + 1)]
+        _qbi = [sp.Symbol("qb{}".format(i)) for i in range(1, mds + 1)]
+        _pbi = [sp.Symbol("pb{}".format(i)) for i in range(1, mds + 1)]
+        all_qps = _qai + _pai + _qbi + _pbi
+        qai = [sp.Poly(_qai[i], *all_qps, domain='CC') for i in range(mds)]
+        pai = [sp.Poly(_pai[i], *all_qps, domain='CC') for i in range(mds)]
+        qbi = [sp.Poly(_qbi[i], *all_qps, domain='CC') for i in range(mds)] # NB: we have already taken the complex conjugate
+        pbi = [sp.Poly(_pbi[i], *all_qps, domain='CC') for i in range(mds)] # NB: we have already taken the complex conjugate
+
+        # Define the alpha and beta vectors
+        alp = []
+        bet = []
+        j = 0
+        while j < mds:
+            alp.append((1 / np.sqrt(2)) * (qai[j] + 1j * pai[j]))
+            bet.append(
+                (1 / np.sqrt(2)) * (qbi[j] - 1j * pbi[j])
+            )  # We have already taken the complex conjugate
+            j += 1
+
+        etav = np.array([eta_t*eta_d, eta_t*eta_d, eta_t*eta_d, eta_t*eta_d])
+
+        if dmi == 0:
+            Ca1 = ((alp[0]*np.sqrt(etav[0]) - alp[1]*np.sqrt(etav[1]))*(1/np.sqrt(2)))**(nvec[0])
+            Ca2 = ((alp[0]*np.sqrt(etav[0]) + alp[1]*np.sqrt(etav[1]))*(1/np.sqrt(2)))**(nvec[1])
+            Ca3 = ((alp[2]*np.sqrt(etav[2]) - alp[3]*np.sqrt(etav[3]))*(1/np.sqrt(2)))**(nvec[2])
+            Ca4 = ((alp[2]*np.sqrt(etav[2]) + alp[3]*np.sqrt(etav[3]))*(1/np.sqrt(2)))**(nvec[3])
+            Ca = Ca1*Ca2*Ca3*Ca4
+        elif dmi == 1:
+            Ca1 = ((alp[0]*np.sqrt(etav[0]) - alp[1]*np.sqrt(etav[1]))*(1/np.sqrt(2)))**(nvec[0])
+            Ca2 = ((alp[0]*np.sqrt(etav[0]) + alp[1]*np.sqrt(etav[1]))*(1/np.sqrt(2)))**(nvec[1])
+            Ca3 = ((alp[2]*np.sqrt(etav[2]) + alp[3]*np.sqrt(etav[3]))*(1/np.sqrt(2)))**(nvec[2])
+            Ca4 = ((alp[2]*np.sqrt(etav[2]) - alp[3]*np.sqrt(etav[3]))*(1/np.sqrt(2)))**(nvec[3])
+            Ca = Ca1*Ca2*Ca3*Ca4
+        elif dmi == 2:
+            Ca1 = ((alp[0]*np.sqrt(etav[0]) + alp[1]*np.sqrt(etav[1]))*(1/np.sqrt(2)))**(nvec[0])
+            Ca2 = ((alp[0]*np.sqrt(etav[0]) - alp[1]*np.sqrt(etav[1]))*(1/np.sqrt(2)))**(nvec[1])
+            Ca3 = ((alp[2]*np.sqrt(etav[2]) - alp[3]*np.sqrt(etav[3]))*(1/np.sqrt(2)))**(nvec[2])
+            Ca4 = ((alp[2]*np.sqrt(etav[2]) + alp[3]*np.sqrt(etav[3]))*(1/np.sqrt(2)))**(nvec[3])
+            Ca = Ca1*Ca2*Ca3*Ca4
+        elif dmi == 3:
+            Ca1 = ((alp[0]*np.sqrt(etav[0]) + alp[1]*np.sqrt(etav[1]))*(1/np.sqrt(2)))**(nvec[0])
+            Ca2 = ((alp[0]*np.sqrt(etav[0]) - alp[1]*np.sqrt(etav[1]))*(1/np.sqrt(2)))**(nvec[1])
+            Ca3 = ((alp[2]*np.sqrt(etav[2]) + alp[3]*np.sqrt(etav[3]))*(1/np.sqrt(2)))**(nvec[2])
+            Ca4 = ((alp[2]*np.sqrt(etav[2]) - alp[3]*np.sqrt(etav[3]))*(1/np.sqrt(2)))**(nvec[3])
+            Ca = Ca1*Ca2*Ca3*Ca4
+        else:
+            Ca = 1
+
+        if dmj == 0:
+            Cb1 = ((bet[0]*np.sqrt(etav[0]) - bet[1]*np.sqrt(etav[1]))*(1/np.sqrt(2)))**(nvec[0])
+            Cb2 = ((bet[0]*np.sqrt(etav[0]) + bet[1]*np.sqrt(etav[1]))*(1/np.sqrt(2)))**(nvec[1])
+            Cb3 = ((bet[2]*np.sqrt(etav[2]) - bet[3]*np.sqrt(etav[3]))*(1/np.sqrt(2)))**(nvec[2])
+            Cb4 = ((bet[2]*np.sqrt(etav[2]) + bet[3]*np.sqrt(etav[3]))*(1/np.sqrt(2)))**(nvec[3])
+            Cb = Cb1*Cb2*Cb3*Cb4
+        elif dmj == 1:
+            Cb1 = ((bet[0]*np.sqrt(etav[0]) - bet[1]*np.sqrt(etav[1]))*(1/np.sqrt(2)))**(nvec[0])
+            Cb2 = ((bet[0]*np.sqrt(etav[0]) + bet[1]*np.sqrt(etav[1]))*(1/np.sqrt(2)))**(nvec[1])
+            Cb3 = ((bet[2]*np.sqrt(etav[2]) + bet[3]*np.sqrt(etav[3]))*(1/np.sqrt(2)))**(nvec[2])
+            Cb4 = ((bet[2]*np.sqrt(etav[2]) - bet[3]*np.sqrt(etav[3]))*(1/np.sqrt(2)))**(nvec[3])
+            Cb = Cb1*Cb2*Cb3*Cb4
+        elif dmj == 2:
+            Cb1 = ((bet[0]*np.sqrt(etav[0]) + bet[1]*np.sqrt(etav[1]))*(1/np.sqrt(2)))**(nvec[0])
+            Cb2 = ((bet[0]*np.sqrt(etav[0]) - bet[1]*np.sqrt(etav[1]))*(1/np.sqrt(2)))**(nvec[1])
+            Cb3 = ((bet[2]*np.sqrt(etav[2]) - bet[3]*np.sqrt(etav[3]))*(1/np.sqrt(2)))**(nvec[2])
+            Cb4 = ((bet[2]*np.sqrt(etav[2]) + bet[3]*np.sqrt(etav[3]))*(1/np.sqrt(2)))**(nvec[3])
+            Cb = Cb1*Cb2*Cb3*Cb4
+        elif dmj == 3:
+            Cb1 = ((bet[0]*np.sqrt(etav[0]) + bet[1]*np.sqrt(etav[1]))*(1/np.sqrt(2)))**(nvec[0])
+            Cb2 = ((bet[0]*np.sqrt(etav[0]) - bet[1]*np.sqrt(etav[1]))*(1/np.sqrt(2)))**(nvec[1])
+            Cb3 = ((bet[2]*np.sqrt(etav[2]) + bet[3]*np.sqrt(etav[3]))*(1/np.sqrt(2)))**(nvec[2])
+            Cb4 = ((bet[2]*np.sqrt(etav[2]) - bet[3]*np.sqrt(etav[3]))*(1/np.sqrt(2)))**(nvec[3])
+            Cb = Cb1*Cb2*Cb3*Cb4
+        else:
+            Cb = 1
+
+        C = Ca*Cb
+
+        return C, all_qps
+
+    @staticmethod
+    def dmatval_do_not_store_looping_pattern_do_not_use_symbols(Cni, Anv, xb):
+        elm = 0.0
+        for i in Cni:
+            elm += tools.wick_out_do_not_store_looping_pattern_do_not_use_symbols(i,Anv)
+        return elm
+
+
+
+    def calculate_fidelity_spin_spin_old(self):
+
         nvec = [0,1,0,1]
         # Define the matrix element, first the numerators
         Cn1n = SPDC.moment_vector_fid(2, 2, nvec, self.params["outcoupling_efficiency"], self.params["detection_efficiency"], 1)
@@ -1080,15 +1213,15 @@ class SPDC:
         nA1 = self.results["k_function_matrix"] + self.results["loss_bsm_matrix"]
         Gam = self.results["Gamma"]
 
-        F1n = tools.W(Cn1n, nA1, x)
-        F2n = tools.W(Cn2n, nA1, x)
-        F3n = tools.W(Cn3n, nA1, x)
-        F4n = tools.W(Cn4n, nA1, x)
+        F1n = tools.W(Cn1n, nA1, self.basisv)
+        F2n = tools.W(Cn2n, nA1, self.basisv)
+        F3n = tools.W(Cn3n, nA1, self.basisv)
+        F4n = tools.W(Cn4n, nA1, self.basisv)
 
-        F1d = tools.W(Cn1d, nA1, x)
+        F1d = tools.W(Cn1d, nA1, self.basisv)
         F2d = F1n
         F3d = F4n
-        F4d = tools.W(Cn4d, nA1, x)
+        F4d = tools.W(Cn4d, nA1, self.basisv)
 
         D1 = np.sqrt(np.linalg.det(nA1))
         D2 = (np.linalg.det(Gam))**(0.25)
@@ -1100,7 +1233,7 @@ class SPDC:
         self.results["fidelity_spin_spin"] = Coef*(F1n - F2n - F3n + F4n)/(F1d + F2d + F3d + F4d) # np.array([F1, F2, F3, F4, Trc])
 
     @staticmethod
-    def dmijZ(dmi, dmj, nAinv, nvec, eta_t, eta_d):
+    def dmijZ_old(self, dmi, dmj, nAinv, nvec, eta_t, eta_d):
         """
         Arguments:
         - nAinv: The numerical inverse of the A matrix
@@ -1114,18 +1247,13 @@ class SPDC:
         - The density matrix element for the SPDC source, not including coefficients
         """
 
-        mds = 4 # Number of modes for our system
-
-        # First, define our basis vector which cooresponds to the A matrix
-        x = ZALM.basisvZ(mds)
-
         # Define the matrix element
         Cn = SPDC.moment_vector_with_memory(dmi, dmj, nvec, eta_t, eta_d)
 
-        return SPDC.dmatval(Cn, nAinv, x)
+        return SPDC.dmatval(Cn, nAinv, self.basisv)
 
     @staticmethod
-    def moment_vector_with_memory(dmi, dmj, nvec, eta_t, eta_d):
+    def moment_vector_with_memory_old(dmi, dmj, nvec, eta_t, eta_d):
         """
         Arguments
         - dmi: The row cooresponding to the density matrix element of interest
@@ -1344,7 +1472,7 @@ class SPDC:
         return Coutf
 
     @staticmethod
-    def dmatval(Cni, Anv, xb):
+    def dmatval_old(Cni, Anv, xb):
         """
         Arguments
         - Cni: The moment vector for the density matrix element
@@ -1456,7 +1584,7 @@ class ZALM:
     def __init__(self, param=TYP_PARAMS):
 
         self.params = param
-
+        self.basisv = ZALM.basisvZ(8)
         self.status = 0
         self.results = {
             "covariance_matrix": None,
@@ -1618,11 +1746,6 @@ class ZALM:
         Calculate the probability of success for the photon-photon single-mode ZALM source
         """
 
-        mds = 8  # Number of modes for our system
-
-        # First, define our basis vector
-        x = ZALM.basisvZ(mds)  # Because we corrected the basis vector of our covariance matrix, we need to use a different basis vector for the Wick coupling
-
         # The loss matrix will be unique for calculating the probability of generation
         self.calculate_loss_bsm_matrix_pgen()
         self.calculate_k_function_matrix()
@@ -1653,10 +1776,10 @@ class ZALM:
         C3 = ZALM.moment_vector(self.params["schmidt_coeffs"], 10)
         C4 = ZALM.moment_vector(self.params["schmidt_coeffs"], 14)
 
-        Term1 = ((self.params["bsm_efficiency"])**2)*((1 - self.params["dark_counts"])**4)*tools.W(C1,nA,x)
-        Term2 = ((self.params["bsm_efficiency"]))*(self.params["dark_counts"])*((1 - (self.params["dark_counts"]))**3)*tools.W(C2,nA,x)
-        Term3 = ((self.params["bsm_efficiency"]))*(self.params["dark_counts"])*((1 - (self.params["dark_counts"]))**3)*tools.W(C3,nA,x)
-        Term4 = ((self.params["dark_counts"])**2)*((1 - self.params["dark_counts"])**2)*tools.W(C4,nA,x)
+        Term1 = ((self.params["bsm_efficiency"])**2)*((1 - self.params["dark_counts"])**4)*tools.W(C1,nA,self.basisv)
+        Term2 = ((self.params["bsm_efficiency"]))*(self.params["dark_counts"])*((1 - (self.params["dark_counts"]))**3)*tools.W(C2,nA,self.basisv)
+        Term3 = ((self.params["bsm_efficiency"]))*(self.params["dark_counts"])*((1 - (self.params["dark_counts"]))**3)*tools.W(C3,nA,self.basisv)
+        Term4 = ((self.params["dark_counts"])**2)*((1 - self.params["dark_counts"])**2)*tools.W(C4,nA,self.basisv)
 
         self.results["probability_success"] = Coef*( Term1 + Term2 + Term3 + Term4 )
 
@@ -1664,11 +1787,6 @@ class ZALM:
         """
         Calculate the fidelity with respect to the Bell state for the photon-photon single-mode ZALM source
         """
-
-        mds = 8  # Number of modes for our system
-
-        # First, define our basis vector
-        x = ZALM.basisvZ(mds)  # Because we corrected the basis vector of our covariance matrix, we need to use a different basis vector for the Wick coupling
 
         # Define the matrix element
         Cn1 = ZALM.moment_vector([1], 1)
@@ -1683,10 +1801,10 @@ class ZALM:
 
         nA1 = self.results["k_function_matrix"] + self.results["loss_bsm_matrix"]
 
-        F1 = tools.W(Cn1, nA1, x)
-        F2 = tools.W(Cn2, nA1, x)
-        F3 = tools.W(Cn3, nA1, x)
-        F4 = tools.W(Cn4, nA1, x)
+        F1 = tools.W(Cn1, nA1, self.basisv)
+        F2 = tools.W(Cn2, nA1, self.basisv)
+        F3 = tools.W(Cn3, nA1, self.basisv)
+        F4 = tools.W(Cn4, nA1, self.basisv)
 
         # Now calculate the trace of the state, which is equivalent to the probability of generation
         self.calculate_loss_bsm_matrix_pgen()
@@ -1698,7 +1816,7 @@ class ZALM:
         D1 = np.sqrt(np.linalg.det(nA1))
         Coef = (N1*N2)/(2*D1)
 
-        Trc = tools.W(Cn0, nA2, x)
+        Trc = tools.W(Cn0, nA2, self.basisv)
 
         self.results["fidelity"] = Coef*(F1 + F2 + F3 + F4)/(Trc) # np.array([F1, F2, F3, F4, Trc])
 
@@ -2151,12 +2269,12 @@ class ZALM:
 
         for i in range(lmat):
             for j in range(lmat):
-                mat[i, j] = ZALM.dmijZ([1], i, j, nAnv, nvec, self.params["outcoupling_efficiency"], self.params["detection_efficiency"], self.params["bsm_efficiency"])
+                mat[i, j] = ZALM.dmijZ(i, j, nAnv, nvec, self.params["outcoupling_efficiency"], self.params["detection_efficiency"], self.params["bsm_efficiency"])
 
         self.results["output_state"] = Coef*mat # This is the unnormalized density matrix
 
     @staticmethod
-    def dmijZ(lamvec, dmi, dmj, nAinv, nvec, eta_t, eta_d, eta_b):
+    def dmijZ(self, dmi, dmj, nAinv, nvec, eta_t, eta_d, eta_b):
         """
         Arguments:
         - nAinv: The numerical inverse of the A matrix
@@ -2170,21 +2288,16 @@ class ZALM:
         Output:
         - The density matrix element for the ZALM source
         """
-
-        mds = 8*len(lamvec) # Number of modes for our system
-
-        # First, define our basis vector which cooresponds to the A matrix
-        x = ZALM.basisvZ(mds)
 
         # Define the matrix element
         #Cn = ZALM.moment_vector_with_memory(lamvec, dmi, dmj, nvec, eta_t, eta_d, eta_b)
         #return ZALM.dmatval_do_not_store_looping_pattern(Cn, nAinv, x)
-        Cn = ZALM.moment_vector_with_memory_do_not_convert_to_symbols(lamvec, dmi, dmj, nvec, eta_t, eta_d, eta_b)
-        return ZALM.dmatval_do_not_store_looping_pattern_do_not_use_symbols(Cn, nAinv, x)
+        Cn = ZALM.moment_vector_with_memory_do_not_convert_to_symbols(dmi, dmj, nvec, eta_t, eta_d, eta_b)
+        return ZALM.dmatval_do_not_store_looping_pattern_do_not_use_symbols(Cn, nAinv, self.basisv)
 
 
     @staticmethod
-    def dmijZ_old(lamvec, dmi, dmj, nAinv, nvec, eta_t, eta_d, eta_b):
+    def dmijZ_old(self, lamvec, dmi, dmj, nAinv, nvec, eta_t, eta_d, eta_b):
         """
         Arguments:
         - nAinv: The numerical inverse of the A matrix
@@ -2198,20 +2311,15 @@ class ZALM:
         Output:
         - The density matrix element for the ZALM source
         """
-
-        mds = 8*len(lamvec) # Number of modes for our system
-
-        # First, define our basis vector which cooresponds to the A matrix
-        x = ZALM.basisvZ(mds)
 
         # Define the matrix element
         Cn = ZALM.moment_vector_with_memory(lamvec, dmi, dmj, nvec, eta_t, eta_d, eta_b)
 
         #return ZALM.dmatval(Cn, nAinv, x)
-        return ZALM.dmatval(Cn, nAinv, x)
+        return ZALM.dmatval(Cn, nAinv, self.basisv)
 
     @staticmethod
-    def moment_vector_with_memory_old(lambda_vector, dmi, dmj, nvec, eta_t, eta_d, eta_b):
+    def moment_vector_with_memory_old(lambda_vector,dmi, dmj, nvec, eta_t, eta_d, eta_b):
         """
         Arguments
         - lambda_vector: The vector of lambda_i's
@@ -2366,7 +2474,7 @@ class ZALM:
         return tuple(result)
 
     @staticmethod
-    def moment_vector_with_memory(lambda_vector, dmi, dmj, nvec, eta_t, eta_d, eta_b):
+    def moment_vector_with_memory(dmi, dmj, nvec, eta_t, eta_d, eta_b):
         """
         Arguments
         - lambda_vector: The vector of lambda_i's
@@ -2377,14 +2485,14 @@ class ZALM:
         - eta_d: The detection efficiency
         - eta_b: The Bell state measurement efficiency
         """
-        C, all_qps = ZALM.moment_vector_with_memory_poly(lambda_vector, dmi, dmj, nvec, eta_t, eta_d, eta_b)
+        C, all_qps = ZALM.moment_vector_with_memory_poly(dmi, dmj, nvec, eta_t, eta_d, eta_b)
         # assert not any((2 in k) for k in v.as_dict().keys()) # making sure that no powers of 2 are present
         result = [(c,*[s for (g,s) in zip(gens,all_qps) if g == 1]) for (gens,c) in C.as_dict().items()]
 
         return result
 
     @staticmethod
-    def moment_vector_with_memory_do_not_convert_to_symbols(lambda_vector, dmi, dmj, nvec, eta_t, eta_d, eta_b):
+    def moment_vector_with_memory_do_not_convert_to_symbols(dmi, dmj, nvec, eta_t, eta_d, eta_b):
         """
         Arguments
         - lambda_vector: The vector of lambda_i's
@@ -2395,14 +2503,14 @@ class ZALM:
         - eta_d: The detection efficiency
         - eta_b: The Bell state measurement efficiency
         """
-        C, all_qps = ZALM.moment_vector_with_memory_poly(lambda_vector, dmi, dmj, nvec, eta_t, eta_d, eta_b)
+        C, all_qps = ZALM.moment_vector_with_memory_poly(dmi, dmj, nvec, eta_t, eta_d, eta_b)
         # assert not any((2 in k) for k in v.as_dict().keys()) # making sure that no powers of 2 are present
         result = [(c,[i for (i,g) in enumerate(gens) if g == 1]) for (gens,c) in C.as_dict().items()]
 
         return result
 
     @staticmethod
-    def moment_vector_with_memory_poly(lambda_vector, dmi, dmj, nvec, eta_t, eta_d, eta_b):
+    def moment_vector_with_memory_poly(dmi, dmj, nvec, eta_t, eta_d, eta_b):
         """
         Arguments
         - lambda_vector: The vector of lambda_i's
@@ -2413,7 +2521,7 @@ class ZALM:
         - eta_d: The detection efficiency
         - eta_b: The Bell state measurement efficiency
         """
-        mds = 8 * len(lambda_vector)  # Number of modes for our system
+        mds = 8 # Number of modes for our system
 
         # For the number of modes desired, create a vector of (q/p)_{\alphas / \beta}'s
         _qai = [sp.Symbol("qa{}".format(i)) for i in range(1, mds + 1)]
@@ -2502,7 +2610,6 @@ class ZALM:
         Cd6 = (alp[5]*bet[5]*etav[5])**(nvec[5])/math.factorial(nvec[5])
         C = Cd3*Cd4*Cd5*Cd6*Ca*Cb
         return C, all_qps
-
 
     @staticmethod
     def moment_vector_with_memory_list(lambda_vector, dmi, dmj, nvec, eta_t, eta_d, eta_b):
@@ -2725,7 +2832,7 @@ class ZALM:
         return Coutf
 
     @staticmethod
-    def moment_vector_nvec(lambda_vector, nvec1, nvec2):
+    def moment_vector_nvec(nvec1, nvec2):
         """
         Arguments
         - lambda_vector: The vector of lambda_i's
@@ -2734,7 +2841,7 @@ class ZALM:
         Output
         - An array of all of the moments that are to be calculated for the given density matrix element
         """
-        mds = 8 * len(lambda_vector)  # Number of modes for our system
+        mds = 8  # Number of modes for our system
 
         # For the number of modes desired, create a vector of (q/p)_{\alphas / \beta}'s
         qai = [sp.symbols("qa{}".format(i)) for i in range(1, mds + 1)]
@@ -2753,7 +2860,6 @@ class ZALM:
             )  # We have already taken the complex conjugate
             j += 1
 
-        ms = tools.mcomb(len(lambda_vector))
 
         Ca = (alp[0]**nvec1[0]) * (alp[1]**nvec1[1]) * (alp[2]**nvec1[2]) * (alp[3]**nvec1[3]) * (alp[4]**nvec1[4]) * (alp[5]**nvec1[5]) * (alp[6]**nvec1[6]) * (alp[7]**nvec1[7])
         Cb = (bet[0]**nvec2[0]) * (bet[1]**nvec2[1]) * (bet[2]**nvec2[2]) * (bet[3]**nvec2[3]) * (bet[4]**nvec2[4]) * (bet[5]**nvec2[5]) * (bet[6]**nvec2[6]) * (bet[7]**nvec2[7])
@@ -2796,7 +2902,7 @@ class ZALM:
         return x
 
     @staticmethod
-    def dmijpp(lamvec, nAinv, nv1, nv2):
+    def dmijpp(self, nAinv, nv1, nv2):
         """
         Arguments:
         - nAinv: The numerical inverse of the A matrix
@@ -2808,15 +2914,10 @@ class ZALM:
         - The density matrix element for the ZALM source
         """
 
-        mds = 8*len(lamvec) # Number of modes for our system
-
-        # First, define our basis vector which cooresponds to the A matrix
-        x = ZALM.basisvZ(mds)
-
         # Define the matrix element
-        Cn = ZALM.moment_vector_nvec(lamvec, nv1, nv2)
+        Cn = ZALM.moment_vector_nvec(nv1, nv2)
 
-        return ZALM.dmatval(Cn, nAinv, x)
+        return ZALM.dmatval(Cn, nAinv, self.basisv)
 
     @staticmethod
     def dmatval(Cni, Anv, xb):
