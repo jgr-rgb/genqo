@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "genqo"
-version = "0.0.4"
+version = "0.1.0"
 authors = [
   { name="Gabriel Richardson", email="rgb@umd.com" },
 ]
@@ -31,5 +31,5 @@ license = "MIT"
 license-files = ["LICEN[CS]E*"]
 
 [project.urls]
-Homepage = "https://github.com/jgrrgb/genqo"
-Issues = "https://github.com/jgrrgb/genqo/issues"
+Homepage = "https://github.com/jgr-rgb/genqo"
+Issues = "https://github.com/jgr-rgb/genqo/issues"
