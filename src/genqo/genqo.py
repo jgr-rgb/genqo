@@ -2269,7 +2269,7 @@ class ZALM:
 
         for i in range(lmat):
             for j in range(lmat):
-                mat[i, j] = ZALM.dmijZ(i, j, nAnv, nvec, self.params["outcoupling_efficiency"], self.params["detection_efficiency"], self.params["bsm_efficiency"])
+                mat[i, j] = ZALM.dmijZ(self, i, j, nAnv, nvec, self.params["outcoupling_efficiency"], self.params["detection_efficiency"], self.params["bsm_efficiency"])
 
         self.results["output_state"] = Coef*mat # This is the unnormalized density matrix
 
