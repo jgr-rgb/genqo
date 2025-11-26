@@ -1,8 +1,9 @@
 """Tests for the ZALM class functionality."""
 
 import pytest
+from genqo.genqo import ZALM
 
-def test_zalm_run_and_calculate_probability(zalm_instance):
+def test_zalm_run_and_calculate_probability(zalm_instance: ZALM):
     """Test that ZALM can run and calculate probability of success."""
     # Execute
     import numpy as np

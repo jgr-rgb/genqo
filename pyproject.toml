@@ -30,6 +30,11 @@ dependencies = [
 license = "MIT"
 license-files = ["LICEN[CS]E*"]
 
+[project.optional-dependencies]
+test = [
+    "pytest",
+]
+
 [project.urls]
 Homepage = "https://github.com/jgr-rgb/genqo"
 Issues = "https://github.com/jgr-rgb/genqo/issues"
