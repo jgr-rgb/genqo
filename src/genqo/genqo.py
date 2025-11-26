@@ -549,6 +549,7 @@ class TMSV:
         )
 
         self.results["covariance_matrix"] = covar2
+        return self.results["covariance_matrix"]
 
     def calculate_k_function_matrix(self):
         """
@@ -576,7 +577,7 @@ class TMSV:
         )
 
         self.results["k_function_matrix"] = block_diag(script_B, script_B.conjugate())
-        return block_diag(script_B, script_B.conjugate())
+        return self.results["k_function_matrix"]
 
     def calculate_loss_matrix(self):
         """
@@ -595,6 +596,7 @@ class TMSV:
             return (1/2)*G + (1/2)*np.transpose(G) + (1/2)*np.eye(8)
 
         self.results["loss_matrix"] = sub_loss(self.params["detection_efficiency"], self.params["detection_efficiency"])
+        return self.results["loss_matrix"]
 
     def calculate_probability_success(self):
         """
@@ -843,6 +845,7 @@ class SPDC:
         )
 
         self.results["covariance_matrix"] = covar2
+        return self.results["covariance_matrix"]
 
     def calculate_k_function_matrix(self):
         """
@@ -870,7 +873,7 @@ class SPDC:
         )
 
         self.results["k_function_matrix"] = block_diag(script_B, script_B.conjugate())
-        return block_diag(script_B, script_B.conjugate())
+        return self.results["k_function_matrix"]
 
     """
     Depending on the parameter that we are calculating, it will have a unique contribution to the A matrix, which is what we calulate in the following functions
@@ -895,6 +898,7 @@ class SPDC:
 
 
         self.results["loss_bsm_matrix"] = sub_loss_fid(self.params["outcoupling_efficiency"], self.params["detection_efficiency"])
+        return self.results["loss_bsm_matrix"]
 
     def calculate_loss_bsm_matrix_trace(self):
         """
@@ -913,6 +917,7 @@ class SPDC:
             return (0.5)*G + (0.5)*np.transpose(G) + (0.5)*np.eye(16)
 
         self.results["loss_bsm_matrix"] = sub_loss_trace(self.params["outcoupling_efficiency"], self.params["detection_efficiency"], self.params["bsm_efficiency"])
+        return self.results["loss_bsm_matrix"]
 
 
     """
@@ -941,6 +946,7 @@ class SPDC:
         C = 1
 
         self.results["probability_success"] = Coef #Coef*tools.W(C,nA,self.basisv) #4 * Coef * val(ZALM.moment_vector(self.params["schmidt_coeffs"], 0), nAinv, x)
+        return self.results["probability_success"]
 
     def calculate_fidelity(self):
         """
@@ -974,6 +980,7 @@ class SPDC:
 
 
         self.results["fidelity"] = Coef*(F1 + F2 + F3 + F4) # np.array([F1, F2, F3, F4, Trc])
+        return self.results["fidelity"]
 
     def calculate_rho_nv1_nv2(self, mA, nv1, nv2):
         """
@@ -1043,6 +1050,7 @@ class SPDC:
         Coef = (1)/(4*D1*D2*D3)
 
         self.results["output_state"] = Coef*mat # This is the unnormalized density matrix
+        return self.results["output_state"]
 
 
     @staticmethod
@@ -1231,6 +1239,7 @@ class SPDC:
 
 
         self.results["fidelity_spin_spin"] = Coef*(F1n - F2n - F3n + F4n)/(F1d + F2d + F3d + F4d) # np.array([F1, F2, F3, F4, Trc])
+        return self.results["fidelity_spin_spin"]
 
     @staticmethod
     def dmijZ_old(self, dmi, dmj, nAinv, nvec, eta_t, eta_d):
@@ -1641,6 +1650,7 @@ class ZALM:
         S46 = block_diag(Id2, St46, Id2, Id2, St46, Id2)
 
         self.results["covariance_matrix"] = S46@S35@covar2@np.transpose(S35)@np.transpose(S46)
+        return self.results["covariance_matrix"]
 
     def calculate_k_function_matrix(self):
         """
@@ -1667,7 +1677,7 @@ class ZALM:
         )
 
         self.results["k_function_matrix"] = block_diag(script_B, script_B.conjugate())
-        return block_diag(script_B, script_B.conjugate())
+        return self.results["k_function_matrix"]
 
     """
     Depending on the parameter that we are calculating, it will have a unique contribution to the A matrix, which is what we calulate in the following functions
@@ -1696,7 +1706,7 @@ class ZALM:
             return (0.5)*G + (0.5)*np.transpose(G) + (1/2)*np.eye(32)
 
         self.results["loss_bsm_matrix"] = sub_loss_pgen(self.params["outcoupling_efficiency"], self.params["detection_efficiency"], self.params["bsm_efficiency"])
-        return sub_loss_pgen(self.params["outcoupling_efficiency"], self.params["detection_efficiency"], self.params["bsm_efficiency"])
+        return self.results["loss_bsm_matrix"]
 
     def calculate_loss_bsm_matrix_fid(self):
         """
@@ -1717,6 +1727,7 @@ class ZALM:
 
 
         self.results["loss_bsm_matrix"] = sub_loss_fid(self.params["outcoupling_efficiency"], self.params["detection_efficiency"], self.params["bsm_efficiency"])
+        return self.results["loss_bsm_matrix"]
 
     def calculate_loss_bsm_matrix_trace(self):
         """
@@ -1736,6 +1747,7 @@ class ZALM:
             return G + np.transpose(G) + (1/2)*np.eye(32)
 
         self.results["loss_bsm_matrix"] = sub_loss_trace(self.params["outcoupling_efficiency"], self.params["detection_efficiency"], self.params["bsm_efficiency"])
+        return self.results["loss_bsm_matrix"]
 
     """
     Functions that calculate parameters of interest for the photon-photon state
@@ -1782,6 +1794,7 @@ class ZALM:
         Term4 = ((self.params["dark_counts"])**2)*((1 - self.params["dark_counts"])**2)*tools.W(C4,nA,self.basisv)
 
         self.results["probability_success"] = Coef*( Term1 + Term2 + Term3 + Term4 )
+        return self.results["probability_success"]
 
     def calculate_fidelity(self):
         """
@@ -1819,6 +1832,7 @@ class ZALM:
         Trc = tools.W(Cn0, nA2, self.basisv)
 
         self.results["fidelity"] = Coef*(F1 + F2 + F3 + F4)/(Trc) # np.array([F1, F2, F3, F4, Trc])
+        return self.results["fidelity"]
 
     def calculate_rho_nv1_nv2(self, mA, nv1, nv2):
         """
@@ -2272,6 +2286,7 @@ class ZALM:
                 mat[i, j] = ZALM.dmijZ(self, i, j, nAnv, nvec, self.params["outcoupling_efficiency"], self.params["detection_efficiency"], self.params["bsm_efficiency"])
 
         self.results["output_state"] = Coef*mat # This is the unnormalized density matrix
+        return self.results["output_state"]
 
     @staticmethod
     def dmijZ(self, dmi, dmj, nAinv, nvec, eta_t, eta_d, eta_b):
