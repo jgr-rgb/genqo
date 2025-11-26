@@ -33,6 +33,7 @@ license-files = ["LICEN[CS]E*"]
 [project.optional-dependencies]
 test = [
     "pytest",
+    "pytest-benchmark",
 ]
 
 [project.urls]
