@@ -1,4 +1,4 @@
-__pycache__
+__pycache__/
 *.pyc
 *.pyo
 *.pyd
@@ -8,9 +8,6 @@ __pycache__
 *.pyzw
 *.pyzwz
 *.pyzwzw
-.DS_Store
-pypi/.DS_Store
-pypi/.DS_Store
 .DS_Store
 pypi/.DS_Store
 pypi/src/.DS_Store
