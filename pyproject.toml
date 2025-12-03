@@ -39,3 +39,6 @@ test = [
 [project.urls]
 Homepage = "https://github.com/jgr-rgb/genqo"
 Issues = "https://github.com/jgr-rgb/genqo/issues"
+
+[tool.pytest.ini_options]
+addopts = "--color=yes"
