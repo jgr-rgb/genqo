@@ -11,8 +11,8 @@ install:
 test:
     pytest test/test_zalm.py
 
-# Run benchmarks only
 alias bm := benchmark
+# Run benchmarks only
 benchmark:
     pytest test/test_benchmarks.py
     
