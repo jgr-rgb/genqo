@@ -385,7 +385,7 @@ class tools:
 
     """
     We can also simplify the calculation of Wick's theorem by using the Hafnian, instead of the approach used above.
-    Hence, bellow are functions for performing calculations via the Hafnian
+    Hence, below are functions for performing calculations via the Hafnian
     """
 
     @staticmethod
