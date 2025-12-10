@@ -14,3 +14,5 @@ pypi/src/.DS_Store
 pypi/src/genqo/.DS_Store
 .venv/
 .vscode/
+.benchmarks/
+.pytest_cache/

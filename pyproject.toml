@@ -34,6 +34,7 @@ license-files = ["LICEN[CS]E*"]
 test = [
     "pytest",
     "pytest-benchmark",
+    "ipykernel",
 ]
 
 [project.urls]
